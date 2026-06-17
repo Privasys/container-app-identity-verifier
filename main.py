@@ -8,7 +8,7 @@ Verification Receipt (IVR) of per-field commitments; cheap `prove_*` derivations
 return consented, audience-bound, government-certified disclosure tokens. Raw data
 stays with the client. See .operations/identity-platform/kyc-enclave-design.md.
 
-HTTP on :8080; runs inside a TEE with RA-TLS terminated in front (TEE-agnostic).
+HTTP on $PORT (platform-allocated; 8080 fallback) with RA-TLS terminated in front.
 Configure-then-freeze: the app boots frozen (503) until POST /configure
 provisions the CSCA trust anchors.
 """
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import os
 import threading
 from urllib.parse import urlparse
 
@@ -209,6 +210,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    server = http.server.HTTPServer(("0.0.0.0", 8080), Handler)
-    print(f"identity-verifier listening on :8080 (kid={_SIGNING_KEY.kid})")
+    # The platform allocates a unique host port per app and passes it as $PORT
+    # (host networking -> listen port == host port; see management-service
+    # migration 034 / bug #43). Fall back to 8080 for local runs.
+    port = int(os.environ.get("PORT", "8080"))
+    server = http.server.HTTPServer(("0.0.0.0", port), Handler)
+    print(f"identity-verifier listening on :{port} (kid={_SIGNING_KEY.kid})")
     server.serve_forever()
