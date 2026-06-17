@@ -1,0 +1,208 @@
+# Copyright (c) Privasys. All rights reserved.
+# Licensed under the GNU Affero General Public License v3.0.
+
+"""Cryptographic primitives for the identity verifier.
+
+ES256 (P-256) signing for the Identity Verification Receipt (IVR) and disclosure
+tokens, SHA-256 field commitments, and the small JOSE helpers (base64url, raw
+R||S signatures) needed to emit/verify compact JWS.
+
+Why ES256: consistent with the Privasys IdP's ES256/JWKS ecosystem so relying
+parties verify disclosure tokens the same way they verify IdP tokens.
+
+PROD NOTE: the signing key MUST be measurement-bound and vault-provisioned (see
+kyc-enclave-design.md §4) so any approved-measurement instance can verify an IVR
+another issued, and the key is re-released only on owner-approved upgrades. This
+module loads a key from PEM (env/secret) or generates an ephemeral one for
+dev/test; wiring the vault is a separate step.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+from dataclasses import dataclass
+from typing import Any
+
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import (
+    decode_dss_signature,
+    encode_dss_signature,
+)
+from cryptography.exceptions import InvalidSignature
+
+_CURVE = ec.SECP256R1()
+_COORD_BYTES = 32  # P-256 field element size
+
+
+# ── base64url + canonical JSON ───────────────────────────────────────────
+
+def b64u_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def b64u_decode(s: str) -> bytes:
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
+
+
+def canonical_json(obj: Any) -> bytes:
+    """Deterministic JSON encoding (sorted keys, no whitespace)."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+# ── commitments ──────────────────────────────────────────────────────────
+
+def new_salt() -> bytes:
+    return os.urandom(16)
+
+
+def commit(value: str, salt: bytes) -> str:
+    """C = b64url(SHA-256(value ‖ salt)). Hides the value; salt prevents
+    correlation/guessing across fields and users."""
+    h = hashlib.sha256()
+    h.update(value.encode("utf-8"))
+    h.update(salt)
+    return b64u_encode(h.digest())
+
+
+def commit_matches(value: str, salt: bytes, commitment: str) -> bool:
+    expected = commit(value, salt)
+    # constant-time compare on the decoded digests
+    return _ct_eq(b64u_decode(expected), b64u_decode(commitment))
+
+
+def _ct_eq(a: bytes, b: bytes) -> bool:
+    if len(a) != len(b):
+        return False
+    res = 0
+    for x, y in zip(a, b):
+        res |= x ^ y
+    return res == 0
+
+
+# ── ES256 raw signatures (JOSE) ──────────────────────────────────────────
+
+def _der_to_raw(der: bytes) -> bytes:
+    r, s = decode_dss_signature(der)
+    return r.to_bytes(_COORD_BYTES, "big") + s.to_bytes(_COORD_BYTES, "big")
+
+
+def _raw_to_der(raw: bytes) -> bytes:
+    if len(raw) != 2 * _COORD_BYTES:
+        raise ValueError("bad ES256 signature length")
+    r = int.from_bytes(raw[:_COORD_BYTES], "big")
+    s = int.from_bytes(raw[_COORD_BYTES:], "big")
+    return encode_dss_signature(r, s)
+
+
+@dataclass
+class SigningKey:
+    """The verifier's ES256 signing key + a stable kid (SHA-256 of the SPKI)."""
+
+    _priv: ec.EllipticCurvePrivateKey
+
+    @property
+    def kid(self) -> str:
+        spki = self._priv.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        return b64u_encode(hashlib.sha256(spki).digest()[:16])
+
+    def sign(self, msg: bytes) -> bytes:
+        der = self._priv.sign(msg, ec.ECDSA(hashes.SHA256()))
+        return _der_to_raw(der)
+
+    def public(self) -> "PublicKey":
+        return PublicKey(self._priv.public_key())
+
+    @classmethod
+    def generate(cls) -> "SigningKey":
+        return cls(ec.generate_private_key(_CURVE))
+
+    @classmethod
+    def from_pem(cls, pem: bytes) -> "SigningKey":
+        key = serialization.load_pem_private_key(pem, password=None)
+        if not isinstance(key, ec.EllipticCurvePrivateKey):
+            raise ValueError("not an EC private key")
+        return cls(key)
+
+    @classmethod
+    def load(cls) -> "SigningKey":
+        """Load from IDENTITY_VERIFIER_SIGNING_KEY_PEM (path or inline PEM),
+        else generate an ephemeral key (dev/test). PROD: replace with the
+        vault-provisioned, measurement-bound key (§4)."""
+        ref = os.environ.get("IDENTITY_VERIFIER_SIGNING_KEY_PEM", "")
+        if ref:
+            data = open(ref, "rb").read() if os.path.exists(ref) else ref.encode()
+            return cls.from_pem(data)
+        return cls.generate()
+
+
+@dataclass
+class PublicKey:
+    _pub: ec.EllipticCurvePublicKey
+
+    def verify(self, msg: bytes, raw_sig: bytes) -> bool:
+        try:
+            self._pub.verify(_raw_to_der(raw_sig), msg, ec.ECDSA(hashes.SHA256()))
+            return True
+        except (InvalidSignature, ValueError):
+            return False
+
+    def jwk(self, kid: str) -> dict:
+        nums = self._pub.public_numbers()
+        return {
+            "kty": "EC",
+            "crv": "P-256",
+            "x": b64u_encode(nums.x.to_bytes(_COORD_BYTES, "big")),
+            "y": b64u_encode(nums.y.to_bytes(_COORD_BYTES, "big")),
+            "use": "sig",
+            "alg": "ES256",
+            "kid": kid,
+        }
+
+    def raw(self) -> bytes:
+        """Uncompressed SEC1 point (0x04 ‖ X ‖ Y)."""
+        return self._pub.public_bytes(
+            serialization.Encoding.X962,
+            serialization.PublicFormat.UncompressedPoint,
+        )
+
+    @classmethod
+    def from_raw(cls, raw: bytes) -> "PublicKey":
+        return cls(ec.EllipticCurvePublicKey.from_encoded_point(_CURVE, raw))
+
+
+# ── compact JWS ──────────────────────────────────────────────────────────
+
+def jws_sign(payload: dict, key: SigningKey, typ: str) -> str:
+    header = {"alg": "ES256", "typ": typ, "kid": key.kid}
+    signing_input = (
+        b64u_encode(canonical_json(header)).encode()
+        + b"."
+        + b64u_encode(canonical_json(payload)).encode()
+    )
+    sig = key.sign(signing_input)
+    return signing_input.decode() + "." + b64u_encode(sig)
+
+
+def jws_verify(token: str, pub: PublicKey) -> dict:
+    """Verify a compact JWS and return the payload. Raises on failure."""
+    try:
+        h_b64, p_b64, s_b64 = token.split(".")
+    except ValueError as exc:
+        raise ValueError("malformed JWS") from exc
+    signing_input = (h_b64 + "." + p_b64).encode()
+    if not pub.verify(signing_input, b64u_decode(s_b64)):
+        raise ValueError("bad signature")
+    return json.loads(b64u_decode(p_b64))
+
+
+def holder_binding(holder_pub_raw: bytes) -> str:
+    """The IVR binds to SHA-256 of the holder's SEC1 public key."""
+    return b64u_encode(hashlib.sha256(holder_pub_raw).digest())

@@ -1,0 +1,101 @@
+{
+    "config_api": {
+        "method": "POST",
+        "path": "/configure"
+    },
+    "tools": [
+        {
+            "name": "configure",
+            "description": "Provision the CSCA/ICAO trust anchors and lift the configure-then-freeze gate. Must be called once per container restart; every other endpoint returns HTTP 503 until it succeeds.",
+            "endpoint": "/configure",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "trust_anchors_pem": {
+                        "type": "string",
+                        "description": "PEM bundle of CSCA / ICAO master-list certificates. SHA-256 of the active set is committed to the per-container RA-TLS leaf at the Identity Trust Anchors OID so the trust anchors are attested without rebuilding the image."
+                    }
+                }
+            }
+        },
+        {
+            "name": "verify_identity",
+            "description": "Verify a passport/ID (ICAO 9303 Passive + Chip Authentication) and that the holder's live face matches the chip portrait (face match + liveness), then return a signed Identity Verification Receipt (IVR) of per-field commitments. Raw document/biometric data is processed in memory and never stored. The wallet keeps the field values + salts.",
+            "endpoint": "/verify-identity",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "holder_pub": {"type": "string", "description": "Wallet hardware public key (base64url SEC1 P-256). Binds the IVR to this wallet."},
+                    "fields": {"type": "object", "description": "(dev stub only) pre-parsed document fields; in production these are extracted from the chip."}
+                },
+                "required": ["holder_pub"]
+            }
+        },
+        {
+            "name": "prove_age_over",
+            "description": "From an IVR, return a signed, audience-bound disclosure token asserting age_over_N (yes/no) without revealing the birth date. Requires a holder-signed request (consented in the wallet).",
+            "endpoint": "/prove/age-over",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ivr": {"type": "string"},
+                    "sub": {"type": "string", "description": "Pairwise subject for rp_id (computed by the wallet)."},
+                    "rp_id": {"type": "string"},
+                    "nonce": {"type": "string"},
+                    "ts": {"type": "integer"},
+                    "holder_pub": {"type": "string"},
+                    "holder_sig": {"type": "string", "description": "base64url ES256 signature by the holder key over {ivr,rp_id,nonce,ts}."},
+                    "birthdate": {"type": "string", "description": "YYYY-MM-DD; must match the IVR commitment."},
+                    "salt": {"type": "string", "description": "base64url salt for the birthdate commitment."},
+                    "threshold": {"type": "integer"}
+                },
+                "required": ["ivr", "sub", "rp_id", "nonce", "ts", "holder_pub", "holder_sig", "birthdate", "salt", "threshold"]
+            }
+        },
+        {
+            "name": "prove_age_band",
+            "description": "Like prove_age_over but returns an age band (e.g. \"18-20\") instead of a single threshold.",
+            "endpoint": "/prove/age-band",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ivr": {"type": "string"}, "sub": {"type": "string"}, "rp_id": {"type": "string"},
+                    "nonce": {"type": "string"}, "ts": {"type": "integer"},
+                    "holder_pub": {"type": "string"}, "holder_sig": {"type": "string"},
+                    "birthdate": {"type": "string"}, "salt": {"type": "string"},
+                    "bands": {"type": "array", "items": {"type": "integer"}, "description": "Optional lower-inclusive band boundaries."}
+                },
+                "required": ["ivr", "sub", "rp_id", "nonce", "ts", "holder_pub", "holder_sig", "birthdate", "salt"]
+            }
+        },
+        {
+            "name": "prove_field",
+            "description": "From an IVR, return a signed disclosure token certifying one document field (e.g. a passport-certified family_name or nationality). Requires a holder-signed, consented request.",
+            "endpoint": "/prove/field",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ivr": {"type": "string"}, "sub": {"type": "string"}, "rp_id": {"type": "string"},
+                    "nonce": {"type": "string"}, "ts": {"type": "integer"},
+                    "holder_pub": {"type": "string"}, "holder_sig": {"type": "string"},
+                    "field": {"type": "string"}, "value": {"type": "string"}, "salt": {"type": "string"}
+                },
+                "required": ["ivr", "sub", "rp_id", "nonce", "ts", "holder_pub", "holder_sig", "field", "value", "salt"]
+            }
+        },
+        {
+            "name": "prove_document_valid",
+            "description": "Return a signed token asserting only that a genuine government document was verified for this holder, disclosing no attribute.",
+            "endpoint": "/prove/document-valid",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ivr": {"type": "string"}, "sub": {"type": "string"}, "rp_id": {"type": "string"},
+                    "nonce": {"type": "string"}, "ts": {"type": "integer"},
+                    "holder_pub": {"type": "string"}, "holder_sig": {"type": "string"}
+                },
+                "required": ["ivr", "sub", "rp_id", "nonce", "ts", "holder_pub", "holder_sig"]
+            }
+        }
+    ]
+}
