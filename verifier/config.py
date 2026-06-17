@@ -19,7 +19,7 @@ APP_VERSION = "0.1.0"
 TRUST_ANCHORS_OID = "1.3.6.1.4.1.65230.2.8"
 
 # Document fields the enclave certifies and commits to in the IVR. These map to
-# the canonical referential attributes the wallet auto-fills as gov-assurance.
+# the canonical referential attributes the client auto-fills as gov-assurance.
 CERTIFIED_FIELDS = (
     "given_name",
     "family_name",
@@ -42,9 +42,9 @@ TOKEN_TTL_SECONDS = int(os.environ.get("IDENTITY_VERIFIER_TOKEN_TTL", "300"))
 IVR_TYP = "application/privasys-ivr+jws"
 DISCLOSURE_TYP = "application/privasys-disclosure+jws"
 
-# Dev stub gate. The real PA/CA + face-match + liveness verifiers are not wired
-# yet (see verifier/verification.py). When this is "1" the app accepts
-# pre-parsed fields and treats document/biometric checks as passing, so the
-# crypto + receipt + disclosure flow is exercisable end-to-end without a real
-# passport. It MUST be unset/false in production.
+# Dev stub gate — biometrics only. Passive Authentication + MRZ extraction are
+# always real. The face-match + liveness models are fetched at deploy and not
+# vendored, so when this is "1" and no models are present the biometric step is
+# treated as passing, letting the document-auth + receipt + disclosure flow run
+# end-to-end in dev/CI. It MUST be unset/false in production.
 ALLOW_DEV_STUB = os.environ.get("IDENTITY_VERIFIER_DEV_STUB", "") == "1"

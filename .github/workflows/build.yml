@@ -3,7 +3,7 @@
 #
 # Test, then build & push the identity-verifier image to GHCR. Each push of a
 # `v*` tag produces ghcr.io/privasys/container-app-identity-verifier:<tag> and a
-# :<tag>-<sha> immutable tag (linux/amd64 — the TDX enclave is amd64; a
+# :<tag>-<sha> immutable tag (linux/amd64 — the confidential enclave is amd64; a
 # multi-arch index would change the digest the platform pins at OID 3.2).
 
 name: Build & Push identity-verifier

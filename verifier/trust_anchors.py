@@ -14,13 +14,21 @@ anchors were in force" via the RA-TLS leaf, exactly like the egress CA-root hash
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 from pathlib import Path
+
+from cryptography import x509 as cx509
+from cryptography.hazmat.primitives import serialization
 
 from . import config, manager
 
 _LOCK = threading.Lock()
-_PATH = Path("/data") / "trust_anchors.pem"
+
+
+def _path() -> Path:
+    """Trust-anchor file on the per-app sealed volume (env-overridable for tests)."""
+    return Path(os.environ.get("IDENTITY_VERIFIER_DATA_DIR", "/data")) / "trust_anchors.pem"
 
 
 def _digest(pem: bytes) -> bytes:
@@ -29,9 +37,18 @@ def _digest(pem: bytes) -> bytes:
 
 def load() -> bytes:
     try:
-        return _PATH.read_bytes()
+        return _path().read_bytes()
     except FileNotFoundError:
         return b""
+
+
+def anchors_der() -> list[bytes]:
+    """Active CSCA trust anchors as DER certificates (for passive_auth.verify)."""
+    pem = load()
+    if not pem:
+        return []
+    return [c.public_bytes(serialization.Encoding.DER)
+            for c in cx509.load_pem_x509_certificates(pem)]
 
 
 def digest_hex() -> str:
@@ -52,11 +69,14 @@ def set_anchors(pem: bytes, *, push_oid: bool = True) -> str:
     """
     if b"-----BEGIN CERTIFICATE-----" not in pem:
         raise ValueError("trust anchors must be PEM certificate(s)")
+    # Validate the bundle parses before swapping.
+    cx509.load_pem_x509_certificates(pem)
     with _LOCK:
-        _PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _PATH.with_suffix(".pem.tmp")
+        path = _path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".pem.tmp")
         tmp.write_bytes(pem)
-        tmp.replace(_PATH)
+        tmp.replace(path)
         d = _digest(pem)
     if push_oid and manager.available():
         manager.set_attestation_extension(config.TRUST_ANCHORS_OID, d)

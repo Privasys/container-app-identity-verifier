@@ -4,7 +4,7 @@
 """Identity Verification Receipt (IVR) + disclosure tokens (commit-and-prove).
 
 `verify_identity` issues a signed IVR: per-field SHA-256 commitments + validity
-+ holder binding. The wallet keeps the field values + salts. Later, cheap
++ holder binding. The client keeps the field values + salts. Later, cheap
 `prove_*` derivations re-open only the one commitment they need and return a
 short-lived, audience-bound disclosure token. The enclave stores nothing.
 
@@ -36,7 +36,7 @@ def build_ivr(
 ) -> tuple[str, dict]:
     """Return (ivr_jws, salts) where salts maps field → b64url(salt).
 
-    The wallet stores {value, salt} per field; the enclave keeps neither.
+    The client stores {value, salt} per field; the enclave keeps neither.
     """
     salts: dict[str, str] = {}
     commitments: dict[str, str] = {}
@@ -77,7 +77,9 @@ def verify_ivr(ivr_jws: str, pub: crypto.PublicKey) -> dict:
         raise ValueError("IVR expired")
     doc = payload.get("doc", {})
     bio = payload.get("biometric", {})
-    if not (doc.get("passive_auth") and doc.get("chip_auth") and bio.get("face_match")):
+    # v1 gates: Passive Authentication + biometric face match. chip_auth (AA/CA,
+    # anti-clone) is recorded for the relying party but not yet a hard gate.
+    if not (doc.get("passive_auth") and bio.get("face_match")):
         raise ValueError("IVR did not pass verification")
     return payload
 
@@ -100,8 +102,8 @@ def check_holder(
 ) -> None:
     """Verify the request comes from the IVR's bound holder. Raises on failure.
 
-    Binds the disclosure to the wallet's hardware key (the same key used for
-    FIDO2): a stolen IVR is useless without it.
+    Binds the disclosure to the holder's hardware key (e.g. a FIDO2 device key):
+    a stolen IVR is useless without it.
     """
     if crypto.holder_binding(holder_pub_raw) != ivr.get("holder_binding"):
         raise ValueError("holder key does not match IVR binding")
@@ -136,7 +138,7 @@ def _token(key: crypto.SigningKey, ivr: dict, sub: str, rp_id: str,
     now = _now()
     payload = {
         "iss": ivr["verifier_id"],
-        "sub": sub,           # pairwise sub for rp_id (computed by the wallet)
+        "sub": sub,           # pairwise sub for rp_id (computed by the client)
         "aud": rp_id,
         "claim": claim,
         "value": value,

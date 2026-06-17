@@ -1,15 +1,16 @@
 # Copyright (c) Privasys. All rights reserved.
 # Licensed under the GNU Affero General Public License v3.0.
 
-"""Privasys Identity Verifier — confidential (TDX) container app.
+"""Privasys Identity Verifier — confidential-computing container app.
 
 Receipt-based identity verification: `verify_identity` issues a signed Identity
 Verification Receipt (IVR) of per-field commitments; cheap `prove_*` derivations
-return consented, audience-bound, gov-certified disclosure tokens. Raw data stays
-on the wallet. See .operations/identity-platform/kyc-enclave-design.md.
+return consented, audience-bound, government-certified disclosure tokens. Raw data
+stays with the client. See .operations/identity-platform/kyc-enclave-design.md.
 
-HTTP on :8080; the enclave terminates RA-TLS in front. Configure-then-freeze: the
-app boots frozen (503) until POST /configure provisions the CSCA trust anchors.
+HTTP on :8080; runs inside a TEE with RA-TLS terminated in front (TEE-agnostic).
+Configure-then-freeze: the app boots frozen (503) until POST /configure
+provisions the CSCA trust anchors.
 """
 
 from __future__ import annotations
@@ -145,13 +146,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _verify_identity(self, body: dict) -> None:
         holder_pub = _b64u_field(body, "holder_pub")
-        doc = authenticate_and_extract(body)
-        bio = match_biometric(body, doc)
+        doc, dgs = authenticate_and_extract(body)
+        bio = match_biometric(body, dgs)
         ivr, salts = receipt.build_ivr(
             _SIGNING_KEY, _MEASUREMENT_PLACEHOLDER, doc, bio, holder_pub
         )
-        # `salts` go to the wallet so it can later open commitments; the enclave
-        # keeps nothing. The wallet auto-fills its profile from doc.fields as
+        # `salts` go to the client so it can later open commitments; the enclave
+        # keeps nothing. The client auto-fills its profile from doc.fields as
         # gov-assurance attributes (kyc-enclave-design §2.1).
         self._json(200, {"ivr": ivr, "salts": salts, "fields": doc.fields})
 

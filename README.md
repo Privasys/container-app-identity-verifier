@@ -1,100 +1,110 @@
-# Privasys Identity Verifier (container app)
+# Privasys Identity Verifier
 
-A confidential (TDX) **enclave-os-virtual** container app that verifies a
-passport/national-ID + a live biometric and issues **consented, gov-certified**
-attribute disclosures — without the raw document or biometric ever leaving the
-user's wallet, and without trusting the user's device.
+A confidential-computing container app that verifies an ICAO 9303 electronic
+travel document (passport / national ID) and a live face capture, and issues
+short-lived, signed claims about the holder — **age over N, age band, or a single
+certified field** — without retaining the raw document or biometric.
 
-> Full design: [`.operations/identity-platform/kyc-enclave-design.md`](https://github.com/Privasys) (Privasys ops).
-> This is Phase 2 of the wallet improvement plan.
+It is a plain Docker container (HTTP on `:8080`) meant to run inside a Trusted
+Execution Environment with RA-TLS terminated in front; it is **not tied to a
+specific TEE** (e.g. it deploys on Privasys enclave-os-virtual, but the image is
+TEE-agnostic). A relying party trusts a claim by verifying the app's signature
+(`/.well-known/jwks.json`) together with the enclave's attestation.
 
-## Why this exists
+## What it does
 
-On-device verifiers (e.g. the EU age-verification wallet) do passport + biometric
-checks **on the phone** — which a modified/rooted device can circumvent. This app
-runs the same checks **inside an attested enclave**: a relying party verifies the
-enclave's RA-TLS attestation, so a tampered device cannot forge a `gov`-assurance
-result. Raw data stays on the wallet; only minimal, signed claims are disclosed.
+1. **`POST /verify-identity`** — given the eMRTD data groups (DG1, DG2, EF.SOD,
+   and optional DG15 + Active-Authentication response), the app:
+   - runs **Passive Authentication** (verifies EF.SOD's CMS signature, chains the
+     Document Signer Certificate to a trusted CSCA, and checks every data-group
+     hash), and optional **Active Authentication** (anti-clone);
+   - extracts the holder fields from the DG1 MRZ;
+   - matches the DG2 portrait against the live capture and scores liveness;
+   - returns a signed **Identity Verification Receipt (IVR)**: per-field SHA-256
+     commitments (with random salts) + the validity results + a binding to the
+     holder's key. The raw inputs are processed in memory and discarded.
 
-## Model: receipt-based (commit-and-prove)
+2. **`POST /prove/...`** — given an IVR and only the single value being proven,
+   the app re-checks that value against the IVR's commitment and returns a
+   short-lived, audience-bound signed token:
+   - `/prove/age-over` → `age_over_N` (true/false), no birth date revealed
+   - `/prove/age-band` → an age band (e.g. `18-20`)
+   - `/prove/field` → one certified field (e.g. `family_name`)
+   - `/prove/document-valid` → "a genuine document was verified", no attribute
+   Each requires a signature from the holder key the IVR is bound to.
 
-1. **`verify_identity`** (heavy, once) — the wallet sends the eMRTD data groups
-   (DG1/DG2/SOD) + a live biometric over RA-TLS. The enclave runs ICAO 9303
-   Passive + Chip Authentication and a DG2↔live face match + liveness, then
-   returns a **signed Identity Verification Receipt (IVR)**: per-field SHA-256
-   **commitments** + validity + holder binding. Raw inputs are processed in
-   memory and **discarded**; the wallet keeps the field values + salts and
-   auto-fills its profile with the document's fields as `gov`-assurance.
-2. **Derivations** (cheap, many, one consented disclosure each) —
-   `prove_age_over`, `prove_age_band`, `prove_field`, `prove_document_valid`
-   take the IVR + only the one value being proven, re-open its commitment, and
-   return a short-lived, audience-bound, enclave-signed **disclosure token**
-   (e.g. "passport-certified proof of 18+"). Each requires a holder-signed
-   request (consented in the wallet).
+This split means the document is read and authenticated once; subsequent claims
+are cheap, minimal, and never re-expose the whole identity.
 
-A relying party verifies a disclosure token against the published verifier key
-(`/.well-known/jwks.json`) **and** the enclave's attestation.
-
-## API (HTTP on `:8080`; the enclave terminates RA-TLS in front)
+## API
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/health`, `/version` | liveness / deployed version |
-| GET | `/.well-known/jwks.json` | verifier public key (verify tokens) |
-| POST | `/configure` | provision CSCA trust anchors; lift configure-then-freeze |
-| POST | `/verify-identity` | → `{ivr, salts, fields}` |
-| POST | `/prove/age-over` | → `{token}` (age_over_N) |
-| POST | `/prove/age-band` | → `{token}` (age band) |
-| POST | `/prove/field` | → `{token}` (one certified field) |
-| POST | `/prove/document-valid` | → `{token}` (no attribute disclosed) |
-| GET/POST | `/trust-anchors` | read / update the CSCA master list (owner-gated) |
+| `GET` | `/health`, `/version` | liveness / deployed version |
+| `GET` | `/.well-known/jwks.json` | signing public key (ES256) |
+| `POST` | `/configure` | load CSCA trust anchors; lift the startup freeze |
+| `POST` | `/verify-identity` | → `{ ivr, salts, fields }` |
+| `POST` | `/prove/age-over`, `/prove/age-band`, `/prove/field`, `/prove/document-valid` | → `{ token }` |
+| `GET`/`POST` | `/trust-anchors` | read / replace the CSCA master list |
 
-See [`privasys.json`](privasys.json) for the tool schemas.
+Tool schemas: [`privasys.json`](privasys.json).
 
-## Trust anchors (runtime-updatable, attested via OID)
+## Trust anchors
 
-The CSCA / ICAO master list is **not** baked into the measured image (it changes
-constantly). It lives on the per-app sealed volume and is settable via
-`/trust-anchors`; the active set's SHA-256 is published as the **Identity Trust
-Anchors OID** (`1.3.6.1.4.1.65230.2.8`) through the manager's
-attestation-extensions endpoint, so relying parties pin "which trust anchors were
-in force" via the RA-TLS leaf — the direct analogue of the egress CA-root hash
-(`…65230.2.1`).
+The CSCA / ICAO master list used for Passive Authentication is **not** built into
+the image. It is loaded at runtime via `/configure` or `/trust-anchors` and stored
+on the per-app encrypted volume. The SHA-256 of the active set is published as an
+attestation extension (OID `1.3.6.1.4.1.65230.2.8`), so a relying party can pin
+which trust anchors were in force from the RA-TLS certificate. Updating the list
+changes that OID; no image rebuild.
 
-## Status & open-source components
+## Libraries
 
-The crypto core (IVR, commitments, disclosure tokens, holder binding, the
-trust-anchor OID flow, configure-then-freeze) is implemented and tested. The
-heavy verifiers are **stubbed** behind `verifier/verification.py` (gated by
-`IDENTITY_VERIFIER_DEV_STUB=1` for dev/test) and to be wired with permissive
-open-source / no-licence-fee components:
+| Area | Library | Licence |
+| --- | --- | --- |
+| HTTP server | Python standard library | PSF |
+| Signing / X.509 / ECDSA | `cryptography` (pyca) | Apache-2.0 / BSD |
+| ASN.1 / CMS (EF.SOD, certs) | `asn1crypto` | MIT |
+| Face matching (ONNX) | FaceNet ONNX model | MIT |
+| Liveness (ONNX) | MiniFASNetV2 (Silent-Face) | Apache-2.0 |
+| ML runtime | `onnxruntime` | MIT |
+| Image decode (DG2) | `Pillow` + OpenJPEG (JPEG2000) | HPND / BSD-2 |
 
-- **eMRTD read** (wallet side): jMRTD + scuba (Android), NFCPassportReader (iOS).
-- **Passive/Chip Auth**: Rust/Python CMS + x509 (refs: pymrtd, Rust `emrtd`).
-- **DG2 decode**: jnbis (JPEG2000/WSQ) **+ ISO 39794-5** (new, ICAO Doc 9303 2026).
-- **Face match**: AuraFace (open ArcFace, commercial-OK) / FaceNet-512 (MIT), ONNX.
-- **Liveness**: Silent-Face / MiniFASNetV2 (Apache-2.0) + active challenge.
+All processing is in-process; the app makes **no outbound network calls** with
+document or biometric data. Model files are fetched at build/deploy, not vendored.
 
-All run **in-enclave with no external calls**. iBeta liveness certification is a
-later funded milestone; the model is swappable behind the same API.
+## Keys
 
-## Develop & test
+The ES256 signing key is **generated inside the enclave** on first start and
+sealed to the Enclave Vault; the vault re-releases it only to an instance
+presenting the same approved measurement, so receipts and tokens remain
+verifiable across restarts and (owner-approved) upgrades. In development the key
+is ephemeral (`IDENTITY_VERIFIER_SIGNING_KEY_PEM` to pin one).
+
+## Run, test, build
 
 ```sh
 pip install -r requirements.txt pytest
 python -m pytest -q
-
-# run locally (dev stub accepts pre-parsed fields, no real passport):
-IDENTITY_VERIFIER_DEV_STUB=1 python main.py
+python main.py                      # serves on :8080
 ```
 
-## Build & deploy
-
 Push a `v*` tag → CI builds `ghcr.io/privasys/container-app-identity-verifier`
-(linux/amd64) and deploys via the platform CLI like any container app. The
-signing key must be **vault-provisioned and measurement-bound** in production
-(see the design doc §4); the dev key is ephemeral.
+(linux/amd64) for deployment as a confidential container.
+
+## Status
+
+- **Implemented + tested:** the receipt/disclosure crypto (ES256, commitments,
+  holder binding, all `prove_*` tokens), **Passive Authentication** (EF.SOD CMS +
+  DSC→CSCA chain + per-DG hash integrity), **DG1 MRZ** field extraction, the
+  runtime trust-anchor → OID flow, configure-then-freeze, and JWKS. 26 tests.
+- **Wired, model-provisioned:** face match + liveness — the matching maths is
+  tested; ONNX inference runs when the models are present, else fails closed (or
+  uses a dev stub in CI).
+- **TODO (hardening):** Active/Chip Authentication (anti-clone — RSA AA needs ISO
+  9796-2, so it must use a vetted eMRTD lib); ISO 39794-5 DG2 decode; binding the
+  signing key to the vault.
 
 ## Licence
 
-GNU Affero General Public License v3.0. See [LICENSE](LICENSE).
+GNU Affero General Public License v3.0 — see [LICENSE](LICENSE).

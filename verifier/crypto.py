@@ -10,11 +10,13 @@ R||S signatures) needed to emit/verify compact JWS.
 Why ES256: consistent with the Privasys IdP's ES256/JWKS ecosystem so relying
 parties verify disclosure tokens the same way they verify IdP tokens.
 
-PROD NOTE: the signing key MUST be measurement-bound and vault-provisioned (see
-kyc-enclave-design.md §4) so any approved-measurement instance can verify an IVR
-another issued, and the key is re-released only on owner-approved upgrades. This
+PROD NOTE: the signing key is **generated inside the enclave** and then sealed to
+the Enclave Vault, which re-releases it only to an instance presenting the same
+approved measurement (see kyc-enclave-design.md §4) — so any approved-measurement
+instance can verify an IVR another issued, and the key survives restarts /
+owner-approved upgrades without ever being minted outside the enclave. This
 module loads a key from PEM (env/secret) or generates an ephemeral one for
-dev/test; wiring the vault is a separate step.
+dev/test; wiring the vault seal/release is a separate step.
 """
 
 from __future__ import annotations
@@ -134,8 +136,9 @@ class SigningKey:
     @classmethod
     def load(cls) -> "SigningKey":
         """Load from IDENTITY_VERIFIER_SIGNING_KEY_PEM (path or inline PEM),
-        else generate an ephemeral key (dev/test). PROD: replace with the
-        vault-provisioned, measurement-bound key (§4)."""
+        else generate an ephemeral key (dev/test). PROD: generate in-enclave on
+        first start and seal to the vault, which re-releases it to the same
+        approved measurement (§4)."""
         ref = os.environ.get("IDENTITY_VERIFIER_SIGNING_KEY_PEM", "")
         if ref:
             data = open(ref, "rb").read() if os.path.exists(ref) else ref.encode()

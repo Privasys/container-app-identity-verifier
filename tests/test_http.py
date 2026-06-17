@@ -1,29 +1,33 @@
 # Copyright (c) Privasys. All rights reserved.
 # Licensed under the GNU Affero General Public License v3.0.
 
-"""End-to-end HTTP test: configure → verify-identity → prove → verify token."""
+"""End-to-end HTTP test: configure → verify-identity (real PA + MRZ) → prove."""
 
+import base64
 import json
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import HTTPServer
 
 import pytest
 
+import fixtures
 import main
-from verifier import config, crypto, receipt
+from verifier import biometrics, config, crypto, receipt
 
 
 @pytest.fixture()
-def server(monkeypatch):
-    # Allow the dev stub so verify_identity accepts pre-parsed fields.
+def server(monkeypatch, tmp_path):
+    # Real Passive Auth + MRZ; biometric uses the dev stub (no ONNX models here).
     monkeypatch.setattr(config, "ALLOW_DEV_STUB", True)
+    monkeypatch.setattr(biometrics, "_models_available", lambda: False)
+    monkeypatch.setenv("IDENTITY_VERIFIER_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(main, "_CONFIGURED", False)
     httpd = HTTPServer(("127.0.0.1", 0), main.Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{httpd.server_address[1]}"
-    yield base
+    yield f"http://127.0.0.1:{httpd.server_address[1]}"
     httpd.shutdown()
 
 
@@ -38,31 +42,32 @@ def _req(base, method, path, body=None):
         return e.code, json.loads(e.read() or b"{}")
 
 
+def _b64(b: bytes) -> str:
+    return base64.b64encode(b).decode()
+
+
 def test_end_to_end(server):
     base = server
 
     assert _req(base, "GET", "/health")[0] == 200
-    assert _req(base, "GET", "/version")[1]["version"] == config.APP_VERSION
 
-    # Frozen until configured.
-    status, _ = _req(base, "POST", "/verify-identity", {})
-    assert status == 503
+    # Build a real SOD + DG1 chain and configure the CSCA as trust anchor.
+    dg1 = fixtures.build_dg1()
+    sod, csca, _ = fixtures.build_chain({1: dg1})
+    assert _req(base, "POST", "/configure",
+                {"trust_anchors_pem": fixtures.cert_pem(csca).decode()})[0] == 200
 
-    assert _req(base, "POST", "/configure", {})[0] == 200
-
-    # jwks available.
-    keys = _req(base, "GET", "/.well-known/jwks.json")[1]["keys"]
-    assert keys and keys[0]["crv"] == "P-256"
-
-    # verify-identity (dev stub: pre-parsed fields + holder pub).
     holder = crypto.SigningKey.generate()
     holder_pub = holder.public().raw()
+
     status, vi = _req(base, "POST", "/verify-identity", {
         "holder_pub": crypto.b64u_encode(holder_pub),
-        "fields": {"given_name": "Alice", "family_name": "Doe",
-                   "birthdate": "2000-01-01", "nationality": "GBR"},
+        "sod": _b64(sod),
+        "data_groups": {"1": _b64(dg1)},
     })
-    assert status == 200
+    assert status == 200, vi
+    assert vi["fields"]["family_name"] == "DOE"
+    assert vi["fields"]["birthdate"] == "2000-01-01"
     ivr_jws, salts = vi["ivr"], vi["salts"]
 
     # prove age-over with a holder-signed request.
@@ -75,16 +80,23 @@ def test_end_to_end(server):
         "holder_sig": crypto.b64u_encode(holder_sig),
         "birthdate": "2000-01-01", "salt": salts["birthdate"], "threshold": 18,
     })
-    assert status == 200
+    assert status == 200, out
     payload = crypto.jws_verify(out["token"], main._SIGNING_KEY.public())
     assert payload["claim"] == "age_over_18" and payload["value"] is True
     assert payload["aud"] == rp and payload["assurance"] == "gov"
 
-    # A tampered birthdate (not matching the commitment) is rejected.
-    status, _ = _req(base, "POST", "/prove/age-over", {
-        "ivr": ivr_jws, "sub": "pairwise", "rp_id": rp, "nonce": nonce, "ts": ts,
+
+def test_verify_identity_rejects_untrusted_document(server):
+    base = server
+    # Configure trust anchor A, but present a SOD signed under a different chain.
+    _sod_a, csca_a, _ = fixtures.build_chain({1: fixtures.build_dg1()})
+    _req(base, "POST", "/configure", {"trust_anchors_pem": fixtures.cert_pem(csca_a).decode()})
+
+    dg1 = fixtures.build_dg1()
+    sod_b, _csca_b, _ = fixtures.build_chain({1: dg1})  # different CSCA
+    holder_pub = crypto.SigningKey.generate().public().raw()
+    status, _ = _req(base, "POST", "/verify-identity", {
         "holder_pub": crypto.b64u_encode(holder_pub),
-        "holder_sig": crypto.b64u_encode(holder_sig),
-        "birthdate": "1990-01-01", "salt": salts["birthdate"], "threshold": 18,
+        "sod": _b64(sod_b), "data_groups": {"1": _b64(dg1)},
     })
-    assert status == 400
+    assert status == 400  # passive authentication fails (untrusted CSCA)

@@ -1,92 +1,94 @@
 # Copyright (c) Privasys. All rights reserved.
 # Licensed under the GNU Affero General Public License v3.0.
 
-"""Document authentication and biometric matching.
+"""Document + biometric verification for `verify_identity`.
 
-These are the heavy, in-enclave steps. They are NOT wired yet — this module
-defines the interfaces and a clearly-gated dev stub so the crypto + receipt +
-disclosure flow is testable end-to-end without a real passport. Replace the
-stubs with the open-source implementations below (all permissive / no licence
-fee; see kyc-enclave-design.md §7):
+Orchestrates the real checks:
+  - Passive Authentication of EF.SOD against the active CSCA trust anchors, and
+    integrity of each supplied data group (verifier/passive_auth.py);
+  - MRZ field extraction from the authenticated DG1 (verifier/mrz.py);
+  - face match (DG2 ↔ live capture) + liveness (verifier/biometrics.py).
 
-  Passive Authentication (EF.SOD CMS signature → DSC → CSCA chain + DG hashes)
-  and Chip/Active Authentication:
-      Rust crypto (x509/CMS) or Python `asn1crypto`/`pyca cryptography`;
-      references: ZeroPass/pymrtd, the Rust `emrtd` crate.
-  DG2 face image decode:
-      jnbis (JPEG2000/WSQ, legacy ISO 19794-5) + an ISO 39794-5 parser
-      (new, ICAO Doc 9303 eff. 2026-01-01) — must support BOTH.
-  Face match (DG2 portrait ↔ live capture):
-      AuraFace (open ArcFace, commercial-OK) / FaceNet-512 (MIT), ONNX Runtime.
-  Liveness / presentation-attack detection:
-      Silent-Face / MiniFASNetV2 (Apache-2.0) + an active challenge.
-
-EVERYTHING here runs in-enclave with NO external calls — that is the whole point
-(kyc-enclave-design.md §7). Do not call a vendor cloud.
+Active/Chip Authentication (anti-clone) is a documented hardening TODO: RSA AA
+uses ISO 9796-2 and Chip Authentication a DH key agreement — both need a vetted
+eMRTD implementation (per the "don't hand-roll crypto" rule). Passive
+Authentication + biometric holder-binding are the v1 gates.
 """
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 
-from . import config
+from . import biometrics, mrz, passive_auth, trust_anchors
+from .biometrics import BioResult, BiometricError  # re-exported for receipt.py
 
 
 class VerificationError(Exception):
-    """Raised when a document or biometric check fails (or isn't wired)."""
+    """Document or biometric verification failed."""
 
 
 @dataclass
 class DocResult:
-    fields: dict          # CERTIFIED_FIELDS → value (extracted from the chip)
+    fields: dict          # certified fields from DG1
     doc_type: str
     issuing_state: str
     doc_expiry: str       # YYYY-MM-DD
     passive_auth: bool
-    chip_auth: bool
+    chip_auth: bool       # Active/Chip Authentication (anti-clone); TODO
 
 
-@dataclass
-class BioResult:
-    face_match: bool
-    liveness_score: float
+def _b64(s: str) -> bytes:
+    try:
+        return base64.b64decode(s, validate=False)
+    except Exception as exc:  # noqa: BLE001
+        raise VerificationError("invalid base64 input") from exc
 
 
-def authenticate_and_extract(request: dict) -> DocResult:
-    """Verify the eMRTD (PA + CA) and extract the certified fields.
+def authenticate_and_extract(body: dict) -> tuple[DocResult, dict]:
+    """Run Passive Authentication + DG integrity, extract DG1 fields.
 
-    PROD: parse DG1/DG2/SOD, run Passive + Chip Authentication against the
-    active CSCA trust anchors, and extract fields from the chip itself.
+    Returns (DocResult, data_groups) where data_groups maps DG number → bytes.
     """
-    if not config.ALLOW_DEV_STUB:
-        raise VerificationError(
-            "passive/chip authentication not wired — see verifier/verification.py "
-            "(set IDENTITY_VERIFIER_DEV_STUB=1 only for dev/test)"
-        )
-    # Dev stub: trust pre-parsed fields from the request; treat PA/CA as passed.
-    fields = request.get("fields") or {}
-    extracted = {k: str(fields[k]) for k in config.CERTIFIED_FIELDS if fields.get(k)}
-    if "birthdate" not in extracted:
-        raise VerificationError("dev stub: 'fields.birthdate' is required")
+    sod = body.get("sod")
+    if not sod:
+        raise VerificationError("sod (EF.SOD) is required")
+    dgs_in = body.get("data_groups") or {}
+    try:
+        dgs = {int(k): _b64(v) for k, v in dgs_in.items()}
+    except (TypeError, ValueError) as exc:
+        raise VerificationError("data_groups must map DG number → base64") from exc
+    if 1 not in dgs:
+        raise VerificationError("DG1 is required")
+
+    try:
+        pa = passive_auth.verify(_b64(sod), trust_anchors.anchors_der())
+        for n, raw in dgs.items():
+            passive_auth.check_data_group(pa, n, raw)
+    except passive_auth.PAError as exc:
+        raise VerificationError(f"passive authentication failed: {exc}") from exc
+
+    try:
+        fields = mrz.parse_dg1(dgs[1])
+    except mrz.MRZError as exc:
+        raise VerificationError(f"DG1: {exc}") from exc
+
     return DocResult(
-        fields=extracted,
-        doc_type=extracted.get("document_type", "P"),
-        issuing_state=extracted.get("issuing_state", "UTO"),
-        doc_expiry=str(request.get("doc_expiry", "2099-12-31")),
+        fields=fields,
+        doc_type=fields.get("document_type", "P"),
+        issuing_state=fields.get("issuing_state", pa.issuing_country),
+        doc_expiry=fields.get("doc_expiry", ""),
         passive_auth=True,
-        chip_auth=True,
-    )
+        chip_auth=False,  # AA/CA not yet wired (see module docstring)
+    ), dgs
 
 
-def match_biometric(request: dict, doc: DocResult) -> BioResult:
-    """Compare the live capture to the DG2 portrait and score liveness.
-
-    PROD: decode DG2, run the face matcher (ONNX) + liveness (MiniFASNet +
-    active challenge) in-enclave; threshold both.
-    """
-    if not config.ALLOW_DEV_STUB:
-        raise VerificationError(
-            "face match / liveness not wired — see verifier/verification.py "
-            "(set IDENTITY_VERIFIER_DEV_STUB=1 only for dev/test)"
-        )
-    return BioResult(face_match=True, liveness_score=0.99)
+def match_biometric(body: dict, dgs: dict) -> BioResult:
+    """Face match (DG2 ↔ live capture) + liveness."""
+    dg2 = dgs.get(2, b"")
+    live = body.get("live_image")
+    live_bytes = _b64(live) if live else b""
+    try:
+        return biometrics.match(dg2, live_bytes)
+    except BiometricError as exc:
+        raise VerificationError(str(exc)) from exc

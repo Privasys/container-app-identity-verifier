@@ -1,9 +1,11 @@
 # Runtime dependencies. Permissive licences only on the enclave side.
-cryptography>=44,<47      # ES256 signing/verify, P-256 (Apache-2.0 / BSD)
+cryptography>=44,<47      # ES256 signing/verify, X.509, RSA/ECDSA (Apache-2.0 / BSD)
+asn1crypto>=1.5,<2        # CMS / EF.SOD + LDS ASN.1 parsing (MIT)
 
-# Future (document authentication + biometrics, all OSS / no licence fee — see
-# verifier/verification.py and kyc-enclave-design.md §7). Pinned when wired:
-#   asn1crypto                # CMS / EF.SOD parsing for Passive Authentication
-#   onnxruntime               # face matcher + liveness inference (in-enclave)
-#   pillow                    # image handling
-#   (DG2: jnbis-equivalent for JPEG2000/WSQ + an ISO 39794-5 parser)
+# Biometrics (face match + liveness), wired in verifier/biometrics.py. Optional
+# at import; required at runtime for the biometric step (models fetched at
+# build/deploy, not vendored). All OSS / no licence fee — see kyc-enclave-design §7.
+#   onnxruntime               # face matcher + liveness inference (MIT)
+#   numpy                     # embedding maths (BSD)
+#   pillow                    # DG2 / capture image decode (HPND)
+#   (DG2 JPEG2000 via Pillow+OpenJPEG; ISO 39794-5 parser to add)

@@ -20,12 +20,12 @@
         },
         {
             "name": "verify_identity",
-            "description": "Verify a passport/ID (ICAO 9303 Passive + Chip Authentication) and that the holder's live face matches the chip portrait (face match + liveness), then return a signed Identity Verification Receipt (IVR) of per-field commitments. Raw document/biometric data is processed in memory and never stored. The wallet keeps the field values + salts.",
+            "description": "Verify a passport/ID (ICAO 9303 Passive + Chip Authentication) and that the holder's live face matches the chip portrait (face match + liveness), then return a signed Identity Verification Receipt (IVR) of per-field commitments. Raw document/biometric data is processed in memory and never stored. The client keeps the field values + salts.",
             "endpoint": "/verify-identity",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "holder_pub": {"type": "string", "description": "Wallet hardware public key (base64url SEC1 P-256). Binds the IVR to this wallet."},
+                    "holder_pub": {"type": "string", "description": "Holder hardware public key (base64url SEC1 P-256). Binds the IVR to this holder/device."},
                     "fields": {"type": "object", "description": "(dev stub only) pre-parsed document fields; in production these are extracted from the chip."}
                 },
                 "required": ["holder_pub"]
@@ -33,13 +33,13 @@
         },
         {
             "name": "prove_age_over",
-            "description": "From an IVR, return a signed, audience-bound disclosure token asserting age_over_N (yes/no) without revealing the birth date. Requires a holder-signed request (consented in the wallet).",
+            "description": "From an IVR, return a signed, audience-bound disclosure token asserting age_over_N (yes/no) without revealing the birth date. Requires a holder-signed request (user-consented).",
             "endpoint": "/prove/age-over",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "ivr": {"type": "string"},
-                    "sub": {"type": "string", "description": "Pairwise subject for rp_id (computed by the wallet)."},
+                    "sub": {"type": "string", "description": "Pairwise subject for rp_id (computed by the client)."},
                     "rp_id": {"type": "string"},
                     "nonce": {"type": "string"},
                     "ts": {"type": "integer"},
