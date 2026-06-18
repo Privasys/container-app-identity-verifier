@@ -75,6 +75,14 @@ def authenticate_and_extract(body: dict) -> tuple[DocResult, dict]:
     except mrz.MRZError as exc:
         raise VerificationError(f"DG1: {exc}") from exc
 
+    # DG11 (optional) — additional personal details (place of birth, personal
+    # number). Already hash-checked against the SOD by the loop above, so trusted.
+    if 11 in dgs:
+        try:
+            fields.update(mrz.parse_dg11(dgs[11]))
+        except mrz.MRZError:
+            pass
+
     # GPG45 box 3 — cross-reference the OCR'd visual MRZ against the chip's DG1.
     # A genuine document has identical machine-readable data on the page and in
     # the chip; a mismatch means the printed page (or its read) was tampered.

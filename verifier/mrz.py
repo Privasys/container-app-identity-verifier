@@ -49,6 +49,31 @@ def _mrz_string(dg1: bytes) -> str:
     return value.decode("ascii", "replace")
 
 
+def parse_dg11(dg11: bytes) -> dict:
+    """Parse DG11 (additional personal details). DG11 is tag 0x6B wrapping data
+    elements; we extract place of birth (0x5F11) and personal number (0x5F10).
+    Returns only the fields present. Already hash-checked against the SOD before
+    we get here, so the contents are trusted."""
+    try:
+        tag, value, _ = _read_tlv(dg11)
+    except MRZError:
+        return {}
+    body = value if tag == 0x6B else dg11  # some encoders omit the template
+    out: dict = {}
+    rest = body
+    while rest:
+        try:
+            t, v, rest = _read_tlv(rest)
+        except MRZError:
+            break
+        text = v.decode("utf-8", "replace").strip()
+        if t == 0x5F11 and text:        # place of birth (components split by '<')
+            out["place_of_birth"] = ", ".join(p for p in text.split("<") if p).strip()
+        elif t == 0x5F10 and text:      # personal (national) number
+            out["personal_number"] = text.replace("<", "").strip()
+    return out
+
+
 def canonical_mrz(dg1: bytes) -> str:
     """The chip's MRZ (from DG1) normalised for comparison: upper-case, no
     whitespace/newlines."""
