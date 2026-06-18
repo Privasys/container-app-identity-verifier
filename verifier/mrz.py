@@ -80,14 +80,23 @@ def canonical_mrz(dg1: bytes) -> str:
     return "".join(_mrz_string(dg1).split()).upper()
 
 
+# OCR-B look-alikes the camera genuinely can't disambiguate. We fold these to a
+# single form on BOTH sides before comparing, so OCR noise (e.g. the document
+# number's 'I' read as '1') is not mistaken for tampering. Safe because the
+# document number, birth date and expiry are already check-digit + BAC verified,
+# and a real tamper changes actual values, not just a 1↔I look-alike.
+_OCR_FOLD = str.maketrans({"O": "0", "I": "1", "S": "5", "B": "8", "Z": "2"})
+
+
 def cross_reference(ocr_mrz: str, dg1: bytes) -> bool:
     """GPG45 box 3 — true if the OCR'd visual MRZ matches the chip's DG1 MRZ.
 
     A genuine document has identical machine-readable data on the page and in the
-    chip; a mismatch means the printed data page (or the OCR) was altered. The
-    caller supplies the OCR'd MRZ lines (joined); we compare normalised."""
-    visual = "".join((ocr_mrz or "").split()).upper()
-    return bool(visual) and visual == canonical_mrz(dg1)
+    chip; a mismatch means the printed data page was altered. The caller supplies
+    the OCR'd MRZ lines (joined); we compare normalised + OCR-confusable-folded."""
+    visual = "".join((ocr_mrz or "").split()).upper().translate(_OCR_FOLD)
+    chip = canonical_mrz(dg1).translate(_OCR_FOLD)
+    return bool(visual) and visual == chip
 
 
 def _date(yymmdd: str, *, birth: bool) -> str:

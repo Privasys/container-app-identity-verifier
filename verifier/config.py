@@ -9,7 +9,7 @@ import os
 
 # Bumped per release so the deployed measurement (image digest at OID 3.2)
 # changes and versions are distinguishable via GET /version.
-APP_VERSION = "0.1.5"
+APP_VERSION = "0.1.6"
 
 # Custom attestation OID carrying the SHA-256 of the active CSCA / ICAO master
 # list (the trust anchors used for Passive Authentication). Set at runtime via
