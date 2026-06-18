@@ -21,7 +21,7 @@ import os
 import threading
 from urllib.parse import urlparse
 
-from verifier import config, crypto, manager, receipt, trust_anchors
+from verifier import config, crypto, manager, master_list, receipt, trust_anchors
 from verifier.verification import VerificationError, authenticate_and_extract, match_biometric
 
 # ── Process state ────────────────────────────────────────────────────────
@@ -147,11 +147,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json(400, {"error": "invalid JSON body"})
             return
         try:
+            # Trust anchors may be supplied as a raw ICAO CSCA Master List (the
+            # verifier validates its signature + chain, then stores the contained
+            # CSCAs) or as a ready PEM bundle.
+            ml_b64 = body.get("master_list_cms")
             pem = body.get("trust_anchors_pem")
-            if pem:
+            if ml_b64:
+                import base64
+                trust_anchors.set_anchors(master_list.verify_and_extract(base64.b64decode(ml_b64)))
+            elif pem:
                 trust_anchors.set_anchors(pem.encode("utf-8"))
             if manager.available():
                 manager.config_complete()
+        except master_list.MasterListError as exc:
+            self._json(400, {"error": f"master list rejected: {exc}"})
+            return
         except Exception as exc:  # noqa: BLE001 — surface manager/validation error
             self._json(500, {"error": str(exc)})
             return
