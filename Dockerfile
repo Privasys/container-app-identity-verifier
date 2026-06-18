@@ -4,7 +4,7 @@ WORKDIR /app
 # opencv-python-headless runtime libs (no GUI): GLib + OpenMP. curl fetches the
 # pinned models below.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libglib2.0-0 libgomp1 curl ca-certificates \
+        libglib2.0-0 libgomp1 libgl1 curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # PaddlePaddle (CPU) — OmniMRZ's OCR backend — from Paddle's own wheel index.
@@ -13,6 +13,13 @@ RUN pip install --no-cache-dir paddlepaddle==3.0.0 \
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# PaddleOCR pulls opencv-contrib-python (the GUI build), which shadows
+# opencv-python-headless and fails to import on slim — breaking the cv2-based
+# face match. Force headless as the sole cv2 so both face match and PaddleOCR
+# import cleanly (libgl1 above is belt-and-braces).
+RUN pip uninstall -y opencv-python opencv-contrib-python opencv-contrib-python-headless 2>/dev/null || true \
+    && pip install --no-cache-dir --force-reinstall --no-deps "opencv-python-headless>=4.10,<5"
 
 # Bake the PaddleOCR models into the image so the enclave needs NO network at
 # runtime (no-egress invariant). Warm up OmniMRZ on a throwaway image to trigger
