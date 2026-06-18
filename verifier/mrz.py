@@ -88,15 +88,67 @@ def canonical_mrz(dg1: bytes) -> str:
 _OCR_FOLD = str.maketrans({"O": "0", "I": "1", "S": "5", "B": "8", "Z": "2"})
 
 
-def cross_reference(ocr_mrz: str, dg1: bytes) -> bool:
-    """GPG45 box 3 — true if the OCR'd visual MRZ matches the chip's DG1 MRZ.
+def _fold(s: str) -> str:
+    return s.upper().translate(_OCR_FOLD)
 
-    A genuine document has identical machine-readable data on the page and in the
-    chip; a mismatch means the printed data page was altered. The caller supplies
-    the OCR'd MRZ lines (joined); we compare normalised + OCR-confusable-folded."""
-    visual = "".join((ocr_mrz or "").split()).upper().translate(_OCR_FOLD)
-    chip = canonical_mrz(dg1).translate(_OCR_FOLD)
-    return bool(visual) and visual == chip
+
+def _levenshtein(a: str, b: str) -> int:
+    if a == b:
+        return 0
+    if not a or not b:
+        return len(a) + len(b)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _too_different(a: str, b: str) -> bool:
+    """Tolerate OCR noise, flag a genuinely different value: allow an edit
+    distance up to ~20% of the field (min 2 chars)."""
+    return _levenshtein(_fold(a), _fold(b)) > max(2, round(0.2 * max(len(a), len(b))))
+
+
+def _raw_mrz_fields(mrz88: str) -> dict:
+    """Critical fields as raw MRZ substrings (filler stripped) — no date parsing,
+    so OCR noise can't raise; for the box-3 consistency comparison only."""
+    l1, l2 = mrz88[0:44], mrz88[44:88]
+    surname, _, given = l1[5:44].partition("<<")
+    return {
+        "family_name": surname.replace("<", " ").strip(),
+        "given_name": given.replace("<", " ").strip(),
+        "document_number": l2[0:9].replace("<", ""),
+        "nationality": l2[10:13].replace("<", ""),
+        "birthdate": l2[13:19],
+        "sex": l2[20],
+        "doc_expiry": l2[21:27],
+    }
+
+
+def cross_reference(ocr_mrz: str, dg1: bytes) -> dict:
+    """GPG45 box 3 at Medium confidence (M1C): check the OCR'd visual MRZ is
+    *consistent* with the chip's DG1 — not a byte-exact match. The chip is
+    authoritative and document number / birth date / expiry are already proven by
+    the successful BAC/PACE unlock, so we tolerate OCR noise (confusable-folded +
+    small edit distance) and flag only a genuine contradiction (likely tampering).
+
+    Returns {"consistent": True|False|None, "mismatches": [field,…]}: None when the
+    MRZ could not be OCR'd — M1C does not fail on an unreadable VIZ when the chip
+    and biometric verify."""
+    visual = "".join((ocr_mrz or "").split()).upper()
+    chip = canonical_mrz(dg1)
+    if len(visual) < 88 or len(chip) != 88:
+        return {"consistent": None, "mismatches": [], "reason": "MRZ not readable"}
+    vf, cf = _raw_mrz_fields(visual[:88]), _raw_mrz_fields(chip)
+    mismatches = [
+        key for key in ("family_name", "given_name", "nationality",
+                        "document_number", "birthdate", "doc_expiry", "sex")
+        if vf[key] and cf[key] and _too_different(vf[key], cf[key])
+    ]
+    return {"consistent": len(mismatches) == 0, "mismatches": mismatches}
 
 
 def _date(yymmdd: str, *, birth: bool) -> str:

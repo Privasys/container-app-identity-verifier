@@ -83,21 +83,27 @@ def authenticate_and_extract(body: dict) -> tuple[DocResult, dict]:
         except mrz.MRZError:
             pass
 
-    # GPG45 box 3 — cross-reference the OCR'd visual MRZ against the chip's DG1.
-    # A genuine document has identical machine-readable data on the page and in
-    # the chip; a mismatch means the printed page (or its read) was tampered.
-    # Enforced when the client supplies the OCR'd MRZ (it always does at higher
-    # confidence); absent ⇒ box 3 not performed (viz_match=None).
+    # GPG45 box 3 (M1C) — cross-reference the *visual* data against the chip. The
+    # wallet sends the data-page image; we OCR it here with OmniMRZ (the on-device
+    # OCR is unreliable on OCR-B) and check the read is consistent with DG1. The
+    # chip is authoritative and doc number / DOB / expiry are already BAC-proven,
+    # so we tolerate OCR noise and fail only on a genuine contradiction (likely
+    # tampering). No image ⇒ box 3 not performed (viz_match=None).
     viz_match: bool | None = None
-    ocr_mrz = body.get("ocr_mrz")
-    if ocr_mrz:
-        if isinstance(ocr_mrz, list):
-            ocr_mrz = "".join(ocr_mrz)
-        viz_match = mrz.cross_reference(ocr_mrz, dgs[1])
-        if not viz_match:
-            raise VerificationError(
-                "visual/chip cross-reference failed: OCR'd MRZ does not match the chip (DG1)"
-            )
+    doc_image = body.get("doc_image")
+    if doc_image:
+        from . import doc_ocr
+        ocr = doc_ocr.read_mrz(_b64(doc_image))
+        if ocr.get("is_screenshot"):
+            raise VerificationError("document image looks like a screenshot/replay, not a live capture")
+        if ocr.get("mrz"):
+            xref = mrz.cross_reference(ocr["mrz"], dgs[1])
+            viz_match = xref.get("consistent")
+            if viz_match is False:
+                raise VerificationError(
+                    "visual/chip cross-reference failed (possible tampering): "
+                    + ", ".join(xref.get("mismatches", []))
+                )
 
     return DocResult(
         fields=fields,

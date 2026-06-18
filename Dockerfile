@@ -7,8 +7,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libglib2.0-0 libgomp1 curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# PaddlePaddle (CPU) — OmniMRZ's OCR backend — from Paddle's own wheel index.
+RUN pip install --no-cache-dir paddlepaddle==3.0.0 \
+        -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Bake the PaddleOCR models into the image so the enclave needs NO network at
+# runtime (no-egress invariant). Warm up OmniMRZ on a throwaway image to trigger
+# the one-time model download into this layer (it caches under /root).
+RUN python -c "import numpy as np, cv2; cv2.imwrite('/tmp/warm.png', np.full((64,64,3),255,np.uint8))" \
+    && python -c "from omnimrz import OmniMRZ; OmniMRZ().process('/tmp/warm.png')" || true
 
 # Biometric models — fetched and SHA-256-pinned (not vendored). A changed
 # upstream file fails the checksum and the build, so the measured image stays
