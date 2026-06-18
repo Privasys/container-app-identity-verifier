@@ -112,9 +112,28 @@ def _digest(hash_algo: str, data: bytes) -> bytes:
 
 # ── Passive Authentication ─────────────────────────────────────────────────
 
+def _unwrap_ef_sod(der: bytes) -> bytes:
+    """EF.SOD on the chip is `[APPLICATION 23]` (tag 0x77) wrapping the CMS
+    ContentInfo (ICAO 9303 Part 10). Strip that outer tag so asn1crypto can parse
+    the universal SEQUENCE underneath; bytes that are already a bare ContentInfo
+    pass through unchanged."""
+    if not der or der[0] != 0x77:
+        return der
+    i = 1
+    n = der[i]
+    i += 1
+    if n & 0x80:  # long-form length
+        count = n & 0x7F
+        length = int.from_bytes(der[i:i + count], "big")
+        i += count
+    else:
+        length = n
+    return der[i:i + length]
+
+
 def verify(sod_der: bytes, trust_anchors_der: list[bytes]) -> PAResult:
     try:
-        ci = cms.ContentInfo.load(sod_der)
+        ci = cms.ContentInfo.load(_unwrap_ef_sod(sod_der))
     except Exception as exc:  # noqa: BLE001
         raise PAError(f"EF.SOD is not valid CMS: {exc}") from exc
     if ci["content_type"].native != "signed_data":
