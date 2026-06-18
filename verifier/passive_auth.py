@@ -240,8 +240,20 @@ def _verify_dsc_chain(dsc: x509.Certificate, trust_anchors_der: list[bytes]) -> 
         raise PAError("no CSCA trust anchors configured")
     anchors = [x509.Certificate.load(a) for a in trust_anchors_der]
     issuer = dsc.issuer
-    for csca in anchors:
-        if csca.subject == issuer:
+    # A country usually has several CSCA certs under the same subject (key
+    # rollovers across the years), so matching by name is not enough — only the
+    # CSCA whose key actually signed this DSC will verify. Try every same-subject
+    # anchor, preferring the one whose Subject Key Identifier matches the DSC's
+    # Authority Key Identifier, and accept the DSC if ANY of them verifies.
+    aki = dsc.authority_key_identifier
+    candidates = [c for c in anchors if c.subject == issuer]
+    if not candidates:
+        raise PAError("DSC issuer is not a trusted CSCA")
+    if aki:
+        candidates.sort(key=lambda c: 0 if c.key_identifier == aki else 1)
+    last_err: Exception | None = None
+    for csca in candidates:
+        try:
             _verify_signature(
                 csca.public_key.dump(),
                 dsc["signature_algorithm"].signature_algo,
@@ -250,7 +262,9 @@ def _verify_dsc_chain(dsc: x509.Certificate, trust_anchors_der: list[bytes]) -> 
                 dsc["signature_value"].native,
             )
             return
-    raise PAError("DSC issuer is not a trusted CSCA")
+        except PAError as exc:
+            last_err = exc
+    raise PAError("DSC does not chain to any trusted CSCA for this issuer") from last_err
 
 
 def _country(cert: x509.Certificate) -> str:
