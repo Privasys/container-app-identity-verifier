@@ -2,10 +2,10 @@
 cryptography>=44,<47      # ES256 signing/verify, X.509, RSA/ECDSA (Apache-2.0 / BSD)
 asn1crypto>=1.5,<2        # CMS / EF.SOD + LDS ASN.1 parsing (MIT)
 
-# Biometrics (face match + liveness), wired in verifier/biometrics.py. Optional
-# at import; required at runtime for the biometric step (models fetched at
-# build/deploy, not vendored). All OSS / no licence fee — see kyc-enclave-design §7.
-#   onnxruntime               # face matcher + liveness inference (MIT)
-#   numpy                     # embedding maths (BSD)
-#   pillow                    # DG2 / capture image decode (HPND)
-#   (DG2 JPEG2000 via Pillow+OpenJPEG; ISO 39794-5 parser to add)
+# Biometrics (face match + liveness), wired in verifier/biometrics.py. Imported
+# lazily; required at runtime for the biometric step. OpenCV bundles the ONNX
+# inference (YuNet detect + SFace recognise + MiniFASNet liveness) and decodes
+# the DG2 portrait incl. JPEG2000 — no separate onnxruntime/Pillow needed.
+# Models are fetched + checksum-pinned in the Dockerfile (not vendored).
+opencv-python-headless>=4.10,<5  # face detect/recognise/liveness + image decode (Apache-2.0/BSD)
+numpy>=1.26,<3                    # embedding maths (BSD)

@@ -24,13 +24,20 @@ from dataclasses import dataclass
 
 from . import config
 
-# Cosine-distance threshold for a face match (1 - cosine similarity). Tune +
-# log the FAR/FRR operating point against a labelled set before production.
-FACE_MATCH_MAX_DISTANCE = float(os.environ.get("IDENTITY_VERIFIER_FACE_MAX_DIST", "0.4"))
+# Cosine-distance threshold for a face match (1 - cosine similarity). Default is
+# SFace's published operating point (cosine similarity >= 0.363 ⇔ distance
+# <= 0.637). Tune + log the FAR/FRR against a labelled set before production.
+FACE_MATCH_MAX_DISTANCE = float(os.environ.get("IDENTITY_VERIFIER_FACE_MAX_DIST", "0.637"))
 # Minimum liveness score (0..1) to accept the capture as a live person.
 LIVENESS_MIN_SCORE = float(os.environ.get("IDENTITY_VERIFIER_LIVENESS_MIN", "0.9"))
 
 _MODEL_DIR = os.environ.get("IDENTITY_VERIFIER_MODEL_DIR", "/models")
+# Model artifacts under _MODEL_DIR. Face detect + recognise are required for the
+# match; liveness (PAD) is enforced only when its model is present (so PAD can be
+# dropped in without a code change).
+_YUNET = "yunet.onnx"          # face detection + 5 landmarks (OpenCV Zoo, MIT)
+_SFACE = "sface.onnx"          # face recognition / embedding (OpenCV Zoo, Apache-2.0)
+_MINIFASNET = "minifasnet.onnx"  # liveness / PAD (Silent-Face, Apache-2.0) — optional
 
 
 @dataclass
@@ -67,30 +74,84 @@ def is_live(score: float, threshold: float = LIVENESS_MIN_SCORE) -> bool:
 
 # ── model inference (wired; model-provisioned) ─────────────────────────────
 
+def _model_path(name: str) -> str:
+    return os.path.join(_MODEL_DIR, name)
+
+
 def _models_available() -> bool:
+    """True when face detect + recognise can run (the match's mandatory path)."""
     try:
-        import onnxruntime  # noqa: F401
+        import cv2  # noqa: F401
     except Exception:  # noqa: BLE001
         return False
-    return os.path.isdir(_MODEL_DIR) and bool(os.listdir(_MODEL_DIR))
+    return os.path.isfile(_model_path(_YUNET)) and os.path.isfile(_model_path(_SFACE))
+
+
+# Lazily-built singletons so the models load once per process.
+_detector = None
+_recognizer = None
+_liveness_net = None
+_liveness_loaded = False
+
+
+def _engines():
+    global _detector, _recognizer
+    import cv2
+    if _detector is None:
+        _detector = cv2.FaceDetectorYN.create(_model_path(_YUNET), "", (320, 320), score_threshold=0.6)
+    if _recognizer is None:
+        _recognizer = cv2.FaceRecognizerSF.create(_model_path(_SFACE), "")
+    return _detector, _recognizer
+
+
+def _decode(image_bytes: bytes):
+    """Decode image bytes to a BGR ndarray. DG2 wraps the portrait (JPEG2000 or
+    JPEG) in an ISO 19794-5 record, so locate the embedded image first; plain
+    captures decode directly. OpenCV's JPEG2000 codec handles DG2."""
+    import cv2
+    import numpy as np
+    buf = image_bytes
+    if not (buf[:3] == b"\xff\xd8\xff"):  # not a bare JPEG → look inside (DG2)
+        jp2 = image_bytes.find(bytes.fromhex("0000000C6A502020"))
+        jpg = image_bytes.find(b"\xff\xd8\xff")
+        start = min([i for i in (jp2, jpg) if i >= 0], default=0)
+        buf = image_bytes[start:]
+    img = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise BiometricError("could not decode a face image")
+    return img
+
+
+def _embed(image_bytes: bytes):
+    """Detect the largest face, align it from the 5 landmarks, and return the
+    SFace embedding as a list (so cosine_distance can score it)."""
+    detector, recognizer = _engines()
+    img = _decode(image_bytes)
+    h, w = img.shape[:2]
+    detector.setInputSize((w, h))
+    _, faces = detector.detect(img)
+    if faces is None or len(faces) == 0:
+        raise BiometricError("no face found in the image")
+    largest = max(faces, key=lambda f: float(f[2]) * float(f[3]))
+    aligned = recognizer.alignCrop(img, largest)
+    feat = recognizer.feature(aligned)
+    return feat.flatten().tolist()
 
 
 def match(dg2_bytes: bytes, live_image_bytes: bytes) -> BioResult:
     """Compare the DG2 portrait to the live capture and score liveness.
 
-    Real path requires the ONNX models in IDENTITY_VERIFIER_MODEL_DIR. Without
-    them: dev stub if IDENTITY_VERIFIER_DEV_STUB=1, else fail closed.
+    Real path requires the face models in IDENTITY_VERIFIER_MODEL_DIR. Without
+    them: dev stub if IDENTITY_VERIFIER_DEV_STUB=1, else fail closed. Liveness
+    (PAD) is enforced only when its model is present.
     """
     if not _models_available():
         if config.ALLOW_DEV_STUB:
             return BioResult(face_match=True, liveness_score=0.99)
         raise BiometricError(
-            "face/liveness models not provisioned (IDENTITY_VERIFIER_MODEL_DIR) — "
+            "face models not provisioned (IDENTITY_VERIFIER_MODEL_DIR) — "
             "see verifier/biometrics.py"
         )
-    # Real inference (FaceNet embed + MiniFASNet liveness). Implemented against
-    # the provisioned models; integration-tested with the model artifacts + a
-    # labelled face set, which are not vendored in this repo.
     dg2_emb = _embed(dg2_bytes)
     live_emb = _embed(live_image_bytes)
     distance = cosine_distance(dg2_emb, live_emb)
@@ -99,9 +160,34 @@ def match(dg2_bytes: bytes, live_image_bytes: bytes) -> BioResult:
                      liveness_score=score)
 
 
-def _embed(image_bytes: bytes):  # pragma: no cover - needs model artifacts
-    raise BiometricError("face embedding inference not wired to provisioned model")
-
-
-def _liveness(image_bytes: bytes) -> float:  # pragma: no cover - needs model
-    raise BiometricError("liveness inference not wired to provisioned model")
+def _liveness(image_bytes: bytes) -> float:
+    """MiniFASNet passive liveness on the live capture. Returns a 0..1 live
+    probability. If no liveness model is provisioned the check is skipped
+    (returns 1.0) — drop minifasnet.onnx into the model dir to enforce PAD."""
+    global _liveness_net, _liveness_loaded
+    import cv2
+    import numpy as np
+    if not _liveness_loaded:
+        path = _model_path(_MINIFASNET)
+        _liveness_net = cv2.dnn.readNetFromONNX(path) if os.path.isfile(path) else None
+        _liveness_loaded = True
+        if _liveness_net is None:
+            print("[biometrics] liveness model absent — PAD skipped (face match only)")
+    if _liveness_net is None:
+        return 1.0
+    img = _decode(image_bytes)
+    detector, _ = _engines()
+    h, w = img.shape[:2]
+    detector.setInputSize((w, h))
+    _, faces = detector.detect(img)
+    if faces is None or len(faces) == 0:
+        raise BiometricError("no face found for liveness")
+    x, y, fw, fh = (int(v) for v in faces[0][:4])
+    crop = img[max(0, y):y + fh, max(0, x):x + fw]
+    blob = cv2.dnn.blobFromImage(crop, scalefactor=1.0, size=(80, 80), swapRB=True)
+    _liveness_net.setInput(blob)
+    out = _liveness_net.forward().flatten()
+    e = np.exp(out - np.max(out))
+    probs = e / e.sum()
+    # Silent-Face label 1 = live (0 = print/2D, 2 = replay/3D).
+    return float(probs[1]) if probs.shape[0] >= 2 else float(out[0])
