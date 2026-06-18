@@ -36,6 +36,8 @@ class DocResult:
     doc_expiry: str       # YYYY-MM-DD
     passive_auth: bool
     chip_auth: bool       # Active/Chip Authentication (anti-clone); TODO
+    viz_match: bool | None = None  # GPG45 box 3: OCR'd visual MRZ == chip DG1 MRZ
+                                   # (None = not supplied by the client)
 
 
 def _b64(s: str) -> bytes:
@@ -73,6 +75,22 @@ def authenticate_and_extract(body: dict) -> tuple[DocResult, dict]:
     except mrz.MRZError as exc:
         raise VerificationError(f"DG1: {exc}") from exc
 
+    # GPG45 box 3 — cross-reference the OCR'd visual MRZ against the chip's DG1.
+    # A genuine document has identical machine-readable data on the page and in
+    # the chip; a mismatch means the printed page (or its read) was tampered.
+    # Enforced when the client supplies the OCR'd MRZ (it always does at higher
+    # confidence); absent ⇒ box 3 not performed (viz_match=None).
+    viz_match: bool | None = None
+    ocr_mrz = body.get("ocr_mrz")
+    if ocr_mrz:
+        if isinstance(ocr_mrz, list):
+            ocr_mrz = "".join(ocr_mrz)
+        viz_match = mrz.cross_reference(ocr_mrz, dgs[1])
+        if not viz_match:
+            raise VerificationError(
+                "visual/chip cross-reference failed: OCR'd MRZ does not match the chip (DG1)"
+            )
+
     return DocResult(
         fields=fields,
         doc_type=fields.get("document_type", "P"),
@@ -80,6 +98,7 @@ def authenticate_and_extract(body: dict) -> tuple[DocResult, dict]:
         doc_expiry=fields.get("doc_expiry", ""),
         passive_auth=True,
         chip_auth=False,  # AA/CA not yet wired (see module docstring)
+        viz_match=viz_match,
     ), dgs
 
 

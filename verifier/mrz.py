@@ -49,6 +49,22 @@ def _mrz_string(dg1: bytes) -> str:
     return value.decode("ascii", "replace")
 
 
+def canonical_mrz(dg1: bytes) -> str:
+    """The chip's MRZ (from DG1) normalised for comparison: upper-case, no
+    whitespace/newlines."""
+    return "".join(_mrz_string(dg1).split()).upper()
+
+
+def cross_reference(ocr_mrz: str, dg1: bytes) -> bool:
+    """GPG45 box 3 — true if the OCR'd visual MRZ matches the chip's DG1 MRZ.
+
+    A genuine document has identical machine-readable data on the page and in the
+    chip; a mismatch means the printed data page (or the OCR) was altered. The
+    caller supplies the OCR'd MRZ lines (joined); we compare normalised."""
+    visual = "".join((ocr_mrz or "").split()).upper()
+    return bool(visual) and visual == canonical_mrz(dg1)
+
+
 def _date(yymmdd: str, *, birth: bool) -> str:
     if len(yymmdd) != 6 or not yymmdd.isdigit():
         raise MRZError(f"bad MRZ date {yymmdd!r}")
