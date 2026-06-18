@@ -210,10 +210,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    # Lift the startup freeze if trust anchors were already loaded on a previous
+    # run and persisted on the per-app sealed volume. Without this a restart or
+    # redeploy leaves an already-configured verifier frozen (503 on every POST
+    # but /configure) until /configure is sent again — which, with a large body
+    # like a selfie, surfaces on the client as a broken pipe rather than a clean
+    # 503, because the handler returns without draining the request body.
+    if trust_anchors.load():
+        _CONFIGURED = True
+        print(f"identity-verifier: resuming with persisted trust anchors "
+              f"({trust_anchors.count()} CSCA, digest={trust_anchors.digest_hex()[:12]})")
+
     # The platform allocates a unique host port per app and passes it as $PORT
     # (host networking -> listen port == host port; see management-service
     # migration 034 / bug #43). Fall back to 8080 for local runs.
     port = int(os.environ.get("PORT", "8080"))
     server = http.server.HTTPServer(("0.0.0.0", port), Handler)
-    print(f"identity-verifier listening on :{port} (kid={_SIGNING_KEY.kid})")
+    print(f"identity-verifier listening on :{port} (kid={_SIGNING_KEY.kid}, configured={_CONFIGURED})")
     server.serve_forever()
