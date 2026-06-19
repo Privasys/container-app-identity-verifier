@@ -17,17 +17,14 @@ asn1crypto>=1.5,<2        # CMS / EF.SOD + LDS ASN.1 parsing (MIT)
 numpy>=1.26,<2                    # embedding maths (BSD); <2 for PaddleOCR compatibility
 
 # Document OCR (GPG45 box 3 + the pre-NFC /read-mrz chip-key read): the data-page
-# image is OCR'd IN THE ENCLAVE (the on-device camera OCR is unreliable on OCR-B),
-# then cross-referenced against the chip. OmniMRZ wraps PaddleOCR for robust MRZ
-# reading + ICAO-9303 validation. PaddlePaddle (CPU) is installed from its own
-# index in the Dockerfile; the OCR models are baked in at build time so the
+# image is OCR'd IN THE ENCLAVE (the on-device camera OCR is unreliable on OCR-B).
+# We drive PaddleOCR directly (verifier/doc_ocr.py) with the document pre-stages
+# disabled and assemble the MRZ ourselves — OmniMRZ's bottom-50%/last-two-rows
+# extractor read only fragments on real full-page photos (and its PyPI/source
+# packaging ships no code anyway). PaddlePaddle (CPU) is installed from its own
+# index in the Dockerfile; the det+rec models are baked in at build time so the
 # enclave needs no network at runtime.
-#
-# NOTE: OmniMRZ is VENDORED at ./omnimrz (Apache-2.0). Its published PyPI wheel
-# 0.2.1 — and a git/source install — ship metadata only, no code (the upstream
-# pyproject `packages.find include` filter discards the package), so `pip install
-# omnimrz` resolves but `import omnimrz` fails. We copy the source instead.
-paddleocr>=3,<4                   # OCR engine behind OmniMRZ (Apache-2.0)
+paddleocr>=3,<4                   # MRZ OCR engine (Apache-2.0)
 # PaddleOCR 3.x is built on PaddleX, whose OCR pipeline needs extra runtime deps;
 # without them PaddleOCR().predict raises DependencyError ("OCR requires
 # additional dependencies"). `ocr-core` is the minimal inference set (no

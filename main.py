@@ -190,17 +190,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise ValueError("doc_image is not valid base64") from exc
         ocr = doc_ocr.read_mrz(raw)
         _debug_capture({"endpoint": "read-mrz", "doc_image": image,
-                        "ocr_mrz": ocr.get("mrz", ""),
+                        "ocr_mrz": ocr.get("mrz", ""), "lines": ocr.get("lines", []),
                         "is_screenshot": ocr.get("is_screenshot")})  # DEBUG — remove next version
         try:
             fields = mrz.mrz_access_fields(ocr.get("mrz") or "")
         except mrz.MRZError as exc:
             # OCR could not produce a usable, check-digit-valid MRZ — ask the
             # client to retake rather than attempt the chip with a bad key.
-            # `ocr_mrz` echoes what OmniMRZ read (empty ⇒ no MRZ found / OCR dep
-            # missing) so a failure is diagnosable without a re-scan.
+            # `ocr_mrz`/`lines` echo what the OCR read so a failure is diagnosable
+            # without a re-scan.
             self._json(422, {"error": f"could not read the document MRZ: {exc}",
-                             "ocr_mrz": ocr.get("mrz", ""),
+                             "ocr_mrz": ocr.get("mrz", ""), "lines": ocr.get("lines", []),
                              "is_screenshot": ocr.get("is_screenshot")})
             return
         self._json(200, {**fields, "is_screenshot": ocr.get("is_screenshot")})

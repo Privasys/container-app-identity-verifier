@@ -27,28 +27,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 # the apt step above. The strict OmniMRZ() init below fails the build if cv2 can't
 # import, so a regression here can't ship silently.
 
-# OmniMRZ is VENDORED at ./omnimrz (the PyPI wheel and a git/source install both
-# ship no code — the upstream pyproject `packages.find include` filter discards
-# the package; see requirements.txt). FAIL THE BUILD if it can't import (against
-# the opencv-contrib cv2 installed above) — a broken OCR previously shipped
-# silently (the import error was swallowed at runtime and every /read-mrz
-# returned "couldn't read the page").
-COPY omnimrz/ omnimrz/
-RUN python -c "from omnimrz import OmniMRZ; print('omnimrz import OK')"
-
-# Bake the PaddleOCR models into the image so the enclave needs NO network at
-# runtime (no-egress invariant). Warm up OmniMRZ on a throwaway image to trigger
-# the one-time model download into this layer (it caches under /root). The
-# process() call tolerates "no MRZ" on the blank image; the import is already
-# guarded above.
-# NOTE: no `|| true` — if PaddleOCR can't initialise (missing OCR deps) or the
-# models can't be fetched into this layer, the build MUST fail rather than ship a
-# verifier that returns "couldn't read the page" at runtime. Constructing OmniMRZ
-# builds the PaddleOCR pipeline, which downloads + loads the detection/recognition
-# models into this layer (baked for the no-egress runtime) and raises on missing
-# deps. We avoid running process() on a synthetic image (its result-parsing has
-# blank-image edge cases); a real read is validated post-deploy.
-RUN python -c "from omnimrz import OmniMRZ; OmniMRZ(); print('OmniMRZ init OK (models baked)')"
+# Bake the PaddleOCR det+rec models into the image so the enclave needs NO network
+# at runtime (no-egress invariant). We drive PaddleOCR directly with the document
+# pre-stages disabled (see verifier/doc_ocr.py), so only the detection +
+# recognition models are constructed/downloaded here — not the heavier
+# orientation/unwarp models. FAIL THE BUILD (no `|| true`) on a missing OCR dep or
+# a failed model fetch, so a broken OCR can never ship silently again (it once did:
+# the import error was swallowed at runtime and every /read-mrz returned "couldn't
+# read the page"). A green build proves the whole OCR stack: deps + cv2 + paddle
+# inference + baked models.
+RUN python -c "import numpy as np; from paddleocr import PaddleOCR; \
+    o=PaddleOCR(lang='en', use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False); \
+    o.predict(np.full((80,300,3), 255, 'uint8')); \
+    print('PaddleOCR init+predict OK (det+rec models baked)')"
 
 # Biometric models — fetched and SHA-256-pinned (not vendored). A changed
 # upstream file fails the checksum and the build, so the measured image stays
