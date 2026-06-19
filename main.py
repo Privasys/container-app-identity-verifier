@@ -182,7 +182,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # `salts` go to the client so it can later open commitments; the enclave
         # keeps nothing. The client auto-fills its profile from doc.fields as
         # gov-assurance attributes (kyc-enclave-design §2.1).
-        self._json(200, {"ivr": ivr, "salts": salts, "fields": doc.fields})
+        self._json(200, {"ivr": ivr, "salts": salts, "fields": doc.fields,
+                         "viz_match": doc.viz_match})
 
     def _prove(self, body: dict, fn) -> None:
         """Shared pre-flight for every derivation: verify IVR + holder binding,

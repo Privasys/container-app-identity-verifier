@@ -89,21 +89,19 @@ def authenticate_and_extract(body: dict) -> tuple[DocResult, dict]:
     # chip is authoritative and doc number / DOB / expiry are already BAC-proven,
     # so we tolerate OCR noise and fail only on a genuine contradiction (likely
     # tampering). No image ⇒ box 3 not performed (viz_match=None).
+    # M1C: record the result as a fraud signal, do NOT hard-fail. The chip +
+    # biometric are authoritative and OmniMRZ can misread, so a mismatch (or a
+    # screenshot/replay flag) is surfaced for review but does not block a genuine
+    # holder. (At higher confidence these would gate.)
     viz_match: bool | None = None
     doc_image = body.get("doc_image")
     if doc_image:
         from . import doc_ocr
         ocr = doc_ocr.read_mrz(_b64(doc_image))
-        if ocr.get("is_screenshot"):
-            raise VerificationError("document image looks like a screenshot/replay, not a live capture")
         if ocr.get("mrz"):
-            xref = mrz.cross_reference(ocr["mrz"], dgs[1])
-            viz_match = xref.get("consistent")
-            if viz_match is False:
-                raise VerificationError(
-                    "visual/chip cross-reference failed (possible tampering): "
-                    + ", ".join(xref.get("mismatches", []))
-                )
+            viz_match = mrz.cross_reference(ocr["mrz"], dgs[1]).get("consistent")
+        if ocr.get("is_screenshot"):
+            viz_match = False  # replay/screenshot of the page → not consistent
 
     return DocResult(
         fields=fields,
