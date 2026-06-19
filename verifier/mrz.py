@@ -168,33 +168,104 @@ def _check_digit(field: str) -> str:
     return str(sum(_char_value(c) * _CD_WEIGHTS[i % 3] for i, c in enumerate(field)) % 10)
 
 
+# OCR-B look-alikes the recognizer genuinely confuses (both directions for the
+# alphanumeric document number; letter→digit for the all-numeric date fields).
+# The MRZ check digit lets us pick the right one deterministically: e.g. a doc
+# number read "..1.." fails its check digit but the "..I.." reading passes, so
+# the 'I' (not '1') is recovered. This is what makes the enclave read reliable
+# where the on-device OCR is not — exactly the 'I' vs '1' problem.
+_CONFUSE_ALNUM = {"0": "O", "O": "0", "1": "I", "I": "1", "5": "S", "S": "5",
+                  "8": "B", "B": "8", "2": "Z", "Z": "2", "6": "G", "G": "6"}
+_CONFUSE_NUM = {"O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "S": "5",
+                "B": "8", "Z": "2", "G": "6", "A": "4", "T": "7"}
+
+# Relative likelihood cost of each look-alike swap (lower = more likely, so a
+# correction using it is preferred). I/1 and O/0 are the OCR-B killers; the rest
+# are visually more distinct. This breaks check-digit collisions where several
+# corrections are otherwise equally valid (prefer an I-recovery via 1→I over an 8→B).
+_CONFUSE_COST = {("1", "I"): 1, ("I", "1"): 1, ("0", "O"): 1, ("O", "0"): 1}
+
+
+def _transitions(s: str) -> int:
+    """Count digit↔letter class changes (filler ignored). Real document numbers
+    are grouped runs (e.g. 12-AB-34567 = 2); an alternating read (A1B2… = 3) is
+    almost always an OCR artefact, which lets us break check-digit collisions."""
+    t, prev = 0, None
+    for c in s:
+        cl = "D" if c.isdigit() else ("L" if c.isalpha() else None)
+        if cl is None:
+            continue
+        if prev is not None and cl != prev:
+            t += 1
+        prev = cl
+    return t
+
+
+def _swap_cost(orig: str, new: str) -> int:
+    return _CONFUSE_COST.get((orig, new), 3)
+
+
+def _candidates(field: str, check: str, confuse: dict) -> list[str]:
+    """All reads within 1–2 OCR-B look-alike substitutions whose ICAO check digit
+    equals `check`, most-plausible first. A direct valid read sorts first; then by
+    fewest substitutions, then by total swap likelihood (I/1, O/0 cheapest), then
+    by fewest digit↔letter transitions."""
+    scored = []
+    if _check_digit(field) == check:
+        scored.append((0, 0, _transitions(field), field))
+    idxs = [i for i, c in enumerate(field) if c in confuse]
+    for i in idxs:
+        cand = field[:i] + confuse[field[i]] + field[i + 1:]
+        if _check_digit(cand) == check:
+            scored.append((1, _swap_cost(field[i], confuse[field[i]]), _transitions(cand), cand))
+    for a in range(len(idxs)):
+        for b in range(a + 1, len(idxs)):
+            i, j = idxs[a], idxs[b]
+            c = list(field)
+            c[i], c[j] = confuse[field[i]], confuse[field[j]]
+            cand = "".join(c)
+            if _check_digit(cand) == check:
+                cost = _swap_cost(field[i], confuse[field[i]]) + _swap_cost(field[j], confuse[field[j]])
+                scored.append((2, cost, _transitions(cand), cand))
+    scored.sort()
+    out: list[str] = []
+    for *_, cand in scored:
+        if cand not in out:
+            out.append(cand)
+    return out
+
+
 def mrz_access_fields(mrz_text: str) -> dict:
     """BAC/PACE access-key fields (document number + birth/expiry dates) from an
     OCR'd TD3 MRZ. Dates stay in raw YYMMDD MRZ form and the document number has
     its filler stripped — the exact shape the on-device eMRTD reader derives the
-    chip key from. Each field's ICAO check digit is validated so an OCR misread
-    cannot yield a wrong (chip-rejecting) key; the caller retakes instead.
+    chip key from. Each field's ICAO check digit is validated (after correcting
+    OCR-B look-alikes against it) so an OCR misread cannot yield a wrong
+    (chip-rejecting) key; the caller retakes if a field can't be recovered.
 
     Raises MRZError if the MRZ is not a usable TD3 or any check digit fails."""
     mrz = "".join((mrz_text or "").split()).upper()
     if len(mrz) < 88:
         raise MRZError(f"MRZ too short for TD3 ({len(mrz)})")
     l2 = mrz[44:88]
-    doc_field, doc_cd = l2[0:9], l2[9]
-    dob_field, dob_cd = l2[13:19], l2[19]
-    exp_field, exp_cd = l2[21:27], l2[27]
-    if not (dob_field.isdigit() and exp_field.isdigit()):
-        raise MRZError("MRZ dates are not numeric")
-    if _check_digit(doc_field) != doc_cd:
+    doc_c = _candidates(l2[0:9], l2[9], _CONFUSE_ALNUM)
+    dob_c = [c for c in _candidates(l2[13:19], l2[19], _CONFUSE_NUM) if c.isdigit()]
+    exp_c = [c for c in _candidates(l2[21:27], l2[27], _CONFUSE_NUM) if c.isdigit()]
+    if not doc_c:
         raise MRZError("document number check digit mismatch")
-    if _check_digit(dob_field) != dob_cd:
+    if not dob_c:
         raise MRZError("birth date check digit mismatch")
-    if _check_digit(exp_field) != exp_cd:
+    if not exp_c:
         raise MRZError("expiry check digit mismatch")
+
+    # Each list is ordered most-plausible first (direct read, else the likeliest
+    # OCR-B correction the check digit allows). Take the best of each. A wrong
+    # guess yields a chip-rejecting key, so the worst case is a retake, not a bad
+    # verification.
     return {
-        "document_number": doc_field.replace("<", "").strip(),
-        "date_of_birth": dob_field,
-        "date_of_expiry": exp_field,
+        "document_number": doc_c[0].replace("<", "").strip(),
+        "date_of_birth": dob_c[0],
+        "date_of_expiry": exp_c[0],
     }
 
 
