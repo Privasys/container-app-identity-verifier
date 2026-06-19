@@ -15,13 +15,14 @@ provisions the CSCA trust anchors.
 
 from __future__ import annotations
 
+import base64
 import http.server
 import json
 import os
 import threading
 from urllib.parse import urlparse
 
-from verifier import config, crypto, manager, master_list, receipt, trust_anchors
+from verifier import config, crypto, manager, master_list, mrz, receipt, trust_anchors
 from verifier.verification import VerificationError, authenticate_and_extract, match_biometric
 
 # ── Process state ────────────────────────────────────────────────────────
@@ -117,7 +118,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         try:
-            if path == "/verify-identity":
+            if path == "/read-mrz":
+                self._read_mrz(body)
+            elif path == "/verify-identity":
                 self._verify_identity(body)
             elif path == "/prove/age-over":
                 self._prove(body, self._do_age_over)
@@ -170,6 +173,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
             _CONFIGURED = True
         self._json(200, {"status": "configured",
                          "trust_anchors_digest": trust_anchors.digest_hex()})
+
+    def _read_mrz(self, body: dict) -> None:
+        """Pre-NFC step: OCR the data-page image with OmniMRZ and return the
+        BAC/PACE access-key fields (document number + birth/expiry dates). The
+        on-device OCR is unreliable on the OCR-B MRZ, so the wallet unlocks the
+        chip with this enclave-grade read instead. Raw image stays only for this
+        RA-TLS hop; nothing is persisted."""
+        from . import doc_ocr
+        image = body.get("doc_image")
+        if not isinstance(image, str) or not image:
+            raise ValueError("doc_image (base64) is required")
+        try:
+            raw = base64.b64decode(image, validate=False)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError("doc_image is not valid base64") from exc
+        ocr = doc_ocr.read_mrz(raw)
+        try:
+            fields = mrz.mrz_access_fields(ocr.get("mrz") or "")
+        except mrz.MRZError as exc:
+            # OCR could not produce a usable, check-digit-valid MRZ — ask the
+            # client to retake rather than attempt the chip with a bad key.
+            self._json(422, {"error": f"could not read the document MRZ: {exc}",
+                             "is_screenshot": ocr.get("is_screenshot")})
+            return
+        self._json(200, {**fields, "is_screenshot": ocr.get("is_screenshot")})
 
     def _verify_identity(self, body: dict) -> None:
         _debug_capture(body)  # DEBUG — remove next version (see _debug_capture)

@@ -6,3 +6,6 @@ venv/
 *.pem
 /data/
 .DS_Store
+
+# Real captured KYC inputs (PII) for local test replay — never commit
+real-inputs/

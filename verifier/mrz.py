@@ -151,6 +151,53 @@ def cross_reference(ocr_mrz: str, dg1: bytes) -> dict:
     return {"consistent": len(mismatches) == 0, "mismatches": mismatches}
 
 
+_CD_WEIGHTS = (7, 3, 1)
+
+
+def _char_value(c: str) -> int:
+    if c == "<":
+        return 0
+    if c.isdigit():
+        return int(c)
+    if "A" <= c <= "Z":
+        return ord(c) - 55  # A=10 … Z=35
+    return 0
+
+
+def _check_digit(field: str) -> str:
+    return str(sum(_char_value(c) * _CD_WEIGHTS[i % 3] for i, c in enumerate(field)) % 10)
+
+
+def mrz_access_fields(mrz_text: str) -> dict:
+    """BAC/PACE access-key fields (document number + birth/expiry dates) from an
+    OCR'd TD3 MRZ. Dates stay in raw YYMMDD MRZ form and the document number has
+    its filler stripped — the exact shape the on-device eMRTD reader derives the
+    chip key from. Each field's ICAO check digit is validated so an OCR misread
+    cannot yield a wrong (chip-rejecting) key; the caller retakes instead.
+
+    Raises MRZError if the MRZ is not a usable TD3 or any check digit fails."""
+    mrz = "".join((mrz_text or "").split()).upper()
+    if len(mrz) < 88:
+        raise MRZError(f"MRZ too short for TD3 ({len(mrz)})")
+    l2 = mrz[44:88]
+    doc_field, doc_cd = l2[0:9], l2[9]
+    dob_field, dob_cd = l2[13:19], l2[19]
+    exp_field, exp_cd = l2[21:27], l2[27]
+    if not (dob_field.isdigit() and exp_field.isdigit()):
+        raise MRZError("MRZ dates are not numeric")
+    if _check_digit(doc_field) != doc_cd:
+        raise MRZError("document number check digit mismatch")
+    if _check_digit(dob_field) != dob_cd:
+        raise MRZError("birth date check digit mismatch")
+    if _check_digit(exp_field) != exp_cd:
+        raise MRZError("expiry check digit mismatch")
+    return {
+        "document_number": doc_field.replace("<", "").strip(),
+        "date_of_birth": dob_field,
+        "date_of_expiry": exp_field,
+    }
+
+
 def _date(yymmdd: str, *, birth: bool) -> str:
     if len(yymmdd) != 6 or not yymmdd.isdigit():
         raise MRZError(f"bad MRZ date {yymmdd!r}")
