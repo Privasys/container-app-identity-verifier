@@ -22,3 +22,8 @@ numpy>=1.26,<2                    # embedding maths (BSD); <2 for PaddleOCR comp
 # pyproject `packages.find include` filter discards the package), so `pip install
 # omnimrz` resolves but `import omnimrz` fails. We copy the source instead.
 paddleocr>=3,<4                   # OCR engine behind OmniMRZ (Apache-2.0)
+# PaddleOCR 3.x is built on PaddleX, whose OCR pipeline needs extra runtime deps;
+# without them PaddleOCR().predict raises DependencyError ("OCR requires
+# additional dependencies"). `ocr-core` is the minimal inference set (no
+# training/serving extras).
+paddlex[ocr-core]>=3,<4          # PaddleOCR runtime deps (Apache-2.0)

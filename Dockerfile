@@ -35,8 +35,14 @@ RUN python -c "from omnimrz import OmniMRZ; print('omnimrz import OK')"
 # the one-time model download into this layer (it caches under /root). The
 # process() call tolerates "no MRZ" on the blank image; the import is already
 # guarded above.
-RUN python -c "import numpy as np, cv2; cv2.imwrite('/tmp/warm.png', np.full((64,64,3),255,np.uint8))" \
-    && python -c "from omnimrz import OmniMRZ; OmniMRZ().process('/tmp/warm.png')" || true
+# NOTE: no `|| true` — if PaddleOCR can't initialise (missing OCR deps) or the
+# models can't be fetched into this layer, the build MUST fail rather than ship a
+# verifier that returns "couldn't read the page" at runtime. Constructing OmniMRZ
+# builds the PaddleOCR pipeline, which downloads + loads the detection/recognition
+# models into this layer (baked for the no-egress runtime) and raises on missing
+# deps. We avoid running process() on a synthetic image (its result-parsing has
+# blank-image edge cases); a real read is validated post-deploy.
+RUN python -c "from omnimrz import OmniMRZ; OmniMRZ(); print('OmniMRZ init OK (models baked)')"
 
 # Biometric models — fetched and SHA-256-pinned (not vendored). A changed
 # upstream file fails the checksum and the build, so the measured image stays
