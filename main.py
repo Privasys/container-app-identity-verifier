@@ -33,19 +33,6 @@ _MEASUREMENT_PLACEHOLDER = "unbound"  # PROD: the enclave measurement (OID 3.2)
 
 _OPEN_PATHS = ("/health", "/version", "/.well-known/jwks.json")
 
-# DEBUG — REMOVE NEXT VERSION. Keep the most recent /verify-identity request body
-# (raw SOD + data groups + selfie) so one real sample can be pulled back via
-# POST /debug/last-input and replayed during biometrics development, instead of
-# re-scanning a passport on every iteration. Dev-only; never ship enabled.
-_DEBUG_LAST_INPUT: dict | None = None
-_DEBUG_LOCK = threading.Lock()
-
-
-def _debug_capture(body: dict) -> None:
-    global _DEBUG_LAST_INPUT
-    with _DEBUG_LOCK:
-        _DEBUG_LAST_INPUT = body
-
 
 def _b64u_field(payload: dict, name: str) -> bytes:
     v = payload.get(name)
@@ -132,9 +119,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._prove(body, self._do_document_valid)
             elif path == "/trust-anchors":
                 self._set_trust_anchors(body)
-            elif path == "/debug/last-input":  # DEBUG — remove next version
-                with _DEBUG_LOCK:
-                    self._json(200, _DEBUG_LAST_INPUT or {})
             else:
                 self._json(404, {"error": "not found"})
         except (ValueError, VerificationError) as exc:
@@ -189,24 +173,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             raise ValueError("doc_image is not valid base64") from exc
         ocr = doc_ocr.read_mrz(raw)
-        _debug_capture({"endpoint": "read-mrz", "doc_image": image,
-                        "ocr_mrz": ocr.get("mrz", ""), "lines": ocr.get("lines", []),
-                        "is_screenshot": ocr.get("is_screenshot")})  # DEBUG — remove next version
         try:
             fields = mrz.mrz_access_fields(ocr.get("mrz") or "")
         except mrz.MRZError as exc:
             # OCR could not produce a usable, check-digit-valid MRZ — ask the
             # client to retake rather than attempt the chip with a bad key.
-            # `ocr_mrz`/`lines` echo what the OCR read so a failure is diagnosable
-            # without a re-scan.
             self._json(422, {"error": f"could not read the document MRZ: {exc}",
-                             "ocr_mrz": ocr.get("mrz", ""), "lines": ocr.get("lines", []),
                              "is_screenshot": ocr.get("is_screenshot")})
             return
         self._json(200, {**fields, "is_screenshot": ocr.get("is_screenshot")})
 
     def _verify_identity(self, body: dict) -> None:
-        _debug_capture(body)  # DEBUG — remove next version (see _debug_capture)
         holder_pub = _b64u_field(body, "holder_pub")
         doc, dgs = authenticate_and_extract(body)
         bio = match_biometric(body, dgs)

@@ -80,17 +80,15 @@ def _assemble_mrz(lines: list[str]) -> str:
 
 def read_mrz(image_bytes: bytes) -> dict:
     """OCR a data-page image. Returns {"mrz": <joined MRZ rows or "">,
-    "lines": [all detected lines] (debug), "is_screenshot": None}."""
-    out: dict = {"mrz": "", "lines": [], "is_screenshot": None}
+    "is_screenshot": None}."""
+    out: dict = {"mrz": "", "is_screenshot": None}
     try:
         import cv2
         import numpy as np
         img = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
         if img is None:
             return out
-        lines = _detected_lines(_engine().predict(img))
-        out["lines"] = lines
-        out["mrz"] = _assemble_mrz(lines)
+        out["mrz"] = _assemble_mrz(_detected_lines(_engine().predict(img)))
     except Exception as exc:  # noqa: BLE001 — OCR is best-effort; box 3 degrades to None
         # Log (don't raise): a misread degrades gracefully, but surface the cause
         # so a systemic failure (e.g. a missing OCR dep) is visible in the logs
