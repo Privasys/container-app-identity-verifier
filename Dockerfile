@@ -10,7 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # PaddlePaddle (CPU) — OmniMRZ's OCR backend — from Paddle's own wheel index.
-RUN pip install --no-cache-dir paddlepaddle==3.0.0 \
+# Must match the paddleocr/paddlex 3.7 model format: 3.0.0 fails at inference
+# with `ValueError: Type of attribute: strides is not right` (the PP-OCRv5 PIR
+# attribute fix landed after 3.0.0). 3.2.x is past it and matches paddlex 3.7.
+RUN pip install --no-cache-dir paddlepaddle==3.2.2 \
         -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
 
 COPY requirements.txt .
