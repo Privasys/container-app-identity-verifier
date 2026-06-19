@@ -180,7 +180,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         on-device OCR is unreliable on the OCR-B MRZ, so the wallet unlocks the
         chip with this enclave-grade read instead. Raw image stays only for this
         RA-TLS hop; nothing is persisted."""
-        from . import doc_ocr
+        from verifier import doc_ocr  # lazy: keep PaddleOCR off the startup path
         image = body.get("doc_image")
         if not isinstance(image, str) or not image:
             raise ValueError("doc_image (base64) is required")
