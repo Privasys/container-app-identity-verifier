@@ -21,9 +21,20 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN pip uninstall -y opencv-python opencv-contrib-python opencv-contrib-python-headless 2>/dev/null || true \
     && pip install --no-cache-dir --force-reinstall --no-deps "opencv-python-headless>=4.10,<5"
 
+# OmniMRZ is VENDORED at ./omnimrz (the PyPI wheel and a git/source install both
+# ship no code — the upstream pyproject `packages.find include` filter discards
+# the package; see requirements.txt). Copy it after the opencv fix-up so the
+# import check below runs against the headless cv2, and FAIL THE BUILD if it can't
+# import — a broken OCR previously shipped silently (the import error was
+# swallowed at runtime and every /read-mrz returned "couldn't read the page").
+COPY omnimrz/ omnimrz/
+RUN python -c "from omnimrz import OmniMRZ; print('omnimrz import OK')"
+
 # Bake the PaddleOCR models into the image so the enclave needs NO network at
 # runtime (no-egress invariant). Warm up OmniMRZ on a throwaway image to trigger
-# the one-time model download into this layer (it caches under /root).
+# the one-time model download into this layer (it caches under /root). The
+# process() call tolerates "no MRZ" on the blank image; the import is already
+# guarded above.
 RUN python -c "import numpy as np, cv2; cv2.imwrite('/tmp/warm.png', np.full((64,64,3),255,np.uint8))" \
     && python -c "from omnimrz import OmniMRZ; OmniMRZ().process('/tmp/warm.png')" || true
 

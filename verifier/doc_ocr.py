@@ -48,8 +48,12 @@ def read_mrz(image_bytes: bytes) -> dict:
         sd = res.get("screenshot_detection") or {}
         if "is_screenshot" in sd:
             out["is_screenshot"] = bool(sd["is_screenshot"])
-    except Exception:  # noqa: BLE001 — OCR is best-effort; box 3 degrades to None
-        pass
+    except Exception as exc:  # noqa: BLE001 — OCR is best-effort; box 3 degrades to None
+        # Log (don't raise): a misread degrades gracefully. But surface the cause
+        # so a *systemic* failure (e.g. a missing OCR dep) is visible in the logs
+        # instead of looking identical to "couldn't read this image".
+        import sys
+        print(f"[doc_ocr] read_mrz failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
     finally:
         if path:
             try:
