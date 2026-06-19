@@ -1,10 +1,12 @@
 FROM python:3.12-slim
 WORKDIR /app
 
-# opencv-python-headless runtime libs (no GUI): GLib + OpenMP. curl fetches the
-# pinned models below.
+# OpenCV runtime libs. PaddleOCR requires the opencv-contrib-python distribution
+# (the GUI build), so install the GL/X shared libs it dylinks at import time on
+# python:slim (GLib + OpenMP + libGL + the X libs highgui references). Without
+# these `import cv2` fails and both the OCR and the face match break.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libglib2.0-0 libgomp1 libgl1 curl ca-certificates \
+        libglib2.0-0 libgomp1 libgl1 libsm6 libxext6 libxrender1 curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # PaddlePaddle (CPU) — OmniMRZ's OCR backend — from Paddle's own wheel index.
@@ -14,19 +16,20 @@ RUN pip install --no-cache-dir paddlepaddle==3.0.0 \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# PaddleOCR pulls opencv-contrib-python (the GUI build), which shadows
-# opencv-python-headless and fails to import on slim — breaking the cv2-based
-# face match. Force headless as the sole cv2 so both face match and PaddleOCR
-# import cleanly (libgl1 above is belt-and-braces).
-RUN pip uninstall -y opencv-python opencv-contrib-python opencv-contrib-python-headless 2>/dev/null || true \
-    && pip install --no-cache-dir --force-reinstall --no-deps "opencv-python-headless>=4.10,<5"
+# NOTE (do not re-add a force-headless step here): PaddleOCR's paddlex dep check
+# verifies the `opencv-contrib-python` distribution is installed (by name), so
+# swapping it for opencv-python-headless made every OCR call raise DependencyError
+# ("OCR requires additional dependencies") at runtime. We keep opencv-contrib-
+# python (pulled by paddlex[ocr-core]) as the sole cv2 and supply its GL/X libs in
+# the apt step above. The strict OmniMRZ() init below fails the build if cv2 can't
+# import, so a regression here can't ship silently.
 
 # OmniMRZ is VENDORED at ./omnimrz (the PyPI wheel and a git/source install both
 # ship no code — the upstream pyproject `packages.find include` filter discards
-# the package; see requirements.txt). Copy it after the opencv fix-up so the
-# import check below runs against the headless cv2, and FAIL THE BUILD if it can't
-# import — a broken OCR previously shipped silently (the import error was
-# swallowed at runtime and every /read-mrz returned "couldn't read the page").
+# the package; see requirements.txt). FAIL THE BUILD if it can't import (against
+# the opencv-contrib cv2 installed above) — a broken OCR previously shipped
+# silently (the import error was swallowed at runtime and every /read-mrz
+# returned "couldn't read the page").
 COPY omnimrz/ omnimrz/
 RUN python -c "from omnimrz import OmniMRZ; print('omnimrz import OK')"
 

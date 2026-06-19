@@ -7,7 +7,13 @@ asn1crypto>=1.5,<2        # CMS / EF.SOD + LDS ASN.1 parsing (MIT)
 # inference (YuNet detect + SFace recognise + MiniFASNet liveness) and decodes
 # the DG2 portrait incl. JPEG2000 — no separate onnxruntime/Pillow needed.
 # Models are fetched + checksum-pinned in the Dockerfile (not vendored).
-opencv-python-headless>=4.10,<5  # face detect/recognise/liveness + image decode (Apache-2.0/BSD)
+#
+# NOTE: cv2 is NOT pinned here. PaddleOCR (paddlex[ocr-core] below) requires the
+# `opencv-contrib-python==4.10.0.84` DISTRIBUTION specifically (paddlex's dep
+# check verifies the dist by name), so we let it provide the single cv2. It is a
+# superset of the main modules face match uses (FaceDetectorYN/FaceRecognizerSF),
+# so a separate opencv-python-headless would only conflict. The Dockerfile adds
+# the GL/X runtime libs so this build imports on python:slim.
 numpy>=1.26,<2                    # embedding maths (BSD); <2 for PaddleOCR compatibility
 
 # Document OCR (GPG45 box 3 + the pre-NFC /read-mrz chip-key read): the data-page
