@@ -1,0 +1,17 @@
+{
+    "app_name": "container-app-identity-verifier",
+    "store_tagline": "Passport and ID verification in a confidential enclave. Prove your age or one field, never the document.",
+    "store_category": "Security & Privacy",
+    "store_keywords": "identity verification, KYC, passport, ID, eMRTD, NFC, age verification, age over 18, age check, ICAO 9303, GPG45, selective disclosure, confidential computing, attestation, biometric, liveness, eIDAS",
+    "store_website_url": "https://privasys.org",
+    "store_privacy_url": "https://privasys.org/legal/privacy/",
+    "store_tos_url": "https://privasys.org/legal/terms/",
+    "store_support_email": "contact@privasys.org",
+    "store_icon_url": "https://privasys.org/store/identity-verifier/icon.svg",
+    "store_screenshots": [
+        "https://privasys.org/store/identity-verifier/feature-1-prove.svg",
+        "https://privasys.org/store/identity-verifier/feature-2-on-device.svg",
+        "https://privasys.org/store/identity-verifier/feature-3-attested.svg"
+    ],
+    "store_description": "Privasys Identity Verifier checks a government electronic ID (a passport or national ID card) and a live face, then issues short-lived, signed claims about the holder. It is built for one purpose: prove what a service genuinely needs, that you are over 18, your name, your nationality, or simply that you hold a real document, without handing over the document itself.\n\nHOW IT PROTECTS YOUR DATA\n- The passport chip, the data-page photo and your selfie are read on your device and sent to the verifier only to be checked. They are processed in memory inside a Trusted Execution Environment and are never stored.\n- Verification happens once. The verifier returns an Identity Verification Receipt: salted commitments to each field plus the validity results, bound to your device key. The actual values stay on your device.\n- Every later disclosure proves a single thing from that receipt. \"Age over 18\" returns only yes or no, never your date of birth. A certified field returns just that field. Each disclosure is bound to the requesting service and expires in minutes.\n\nWHAT A RELYING PARTY RECEIVES\nA signed claim (age over N, an age band, one certified field, or \"a genuine document was verified\"), verifiable against the verifier's published key together with the enclave's remote attestation. The relying party can confirm which audited code produced the result and which trust anchors were in force, without ever seeing the raw document.\n\nHOW THE DOCUMENT IS AUTHENTICATED\n- Passive Authentication to ICAO 9303: the chip's signed security object is verified and chained to a trusted Country Signing CA from the ICAO master list, and every data-group hash is checked.\n- The chip portrait is matched against a live face capture, with a liveness check.\n- The data page is cross-referenced against the chip.\n\nASSURANCE AND STANDARDS\n- Target assurance: GPG45 / UK DVS Medium Level of Confidence (M1C).\n- Standards: ICAO 9303 eMRTD, NFC chip reading, SHA-256 field commitments, ES256 signed receipts and disclosure tokens. Selective-disclosure credential formats (SD-JWT VC) are on the roadmap.\n\nWHY YOU CAN TRUST IT\nThe verifier runs published, auditable code inside an attested enclave. Trust comes from verifying that code and its attestation, not from trusting an operator. The image makes no outbound calls with your document or biometric data.\n\nPrivasys Identity Verifier is part of the Privasys confidential-computing platform: privacy that is verifiable, not promised."
+}
