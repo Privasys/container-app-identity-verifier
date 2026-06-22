@@ -65,3 +65,58 @@ def test_tampered_sod_signature_rejected():
     bad[len(bad) // 2] ^= 0xFF
     with pytest.raises(PAError):
         passive_auth.verify(bytes(bad), [fixtures.cert_der(csca)])
+
+
+def test_rsassa_pss_typed_dsc_key_verifies():
+    """A DSC whose SPKI is tagged id-RSASSA-PSS (as some EU passports encode it)
+    must verify. Older pyca/cryptography rejects that SPKI outright; the verifier
+    re-wraps it as rsaEncryption. On newer pyca it loads directly — either way
+    _verify_signature must accept a valid PSS signature and reject a bad one."""
+    from asn1crypto import keys
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    plain_spki = key.public_key().public_bytes(
+        Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+    info = keys.PublicKeyInfo.load(plain_spki)
+    pss_spki = keys.PublicKeyInfo({
+        "algorithm": {"algorithm": "rsassa_pss"},
+        "public_key": info["public_key"].parsed,
+    }).dump()
+
+    msg = b"LDS-SECURITY-OBJECT"
+    sig = key.sign(
+        msg, padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32),
+        hashes.SHA256())
+    passive_auth._verify_signature(pss_spki, "rsassa_pss", "sha256", msg, sig)
+    bad_sig = sig[:-1] + bytes([sig[-1] ^ 0xFF])
+    with pytest.raises(PAError):
+        passive_auth._verify_signature(pss_spki, "rsassa_pss", "sha256", msg, bad_sig)
+
+
+def test_brainpool_explicit_params_dsc_key_verifies():
+    """The real German-passport case: a Brainpool EC DSC whose SubjectPublicKeyInfo
+    carries explicit domain parameters (no named-curve OID). cryptography raises
+    'ECDSA keys with explicit parameters are unsupported'; the verifier falls back
+    to python-ecdsa, which parses the explicit params and verifies."""
+    import hashlib
+
+    import ecdsa
+    from cryptography.hazmat.primitives.serialization import load_der_public_key
+
+    sk = ecdsa.SigningKey.generate(curve=ecdsa.BRAINPOOLP256r1)
+    spki = sk.verifying_key.to_der(curve_parameters_encoding="explicit")
+
+    # Precondition: cryptography cannot load an explicit-parameters EC key.
+    with pytest.raises(ValueError):
+        load_der_public_key(spki)
+
+    msg = b"LDS-SECURITY-OBJECT"
+    sig = sk.sign(msg, hashfunc=hashlib.sha256, sigencode=ecdsa.util.sigencode_der)
+    # The verifier accepts it via the fallback …
+    passive_auth._verify_signature(spki, "sha256_ecdsa", "sha256", msg, sig)
+    # … and rejects a tampered signature.
+    with pytest.raises(PAError):
+        passive_auth._verify_signature(
+            spki, "sha256_ecdsa", "sha256", msg, sig[:-1] + bytes([sig[-1] ^ 0xFF]))

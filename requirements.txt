@@ -1,6 +1,9 @@
 # Runtime dependencies. Permissive licences only on the enclave side.
 cryptography>=44,<47      # ES256 signing/verify, X.509, RSA/ECDSA (Apache-2.0 / BSD)
 asn1crypto>=1.5,<2        # CMS / EF.SOD + LDS ASN.1 parsing (MIT)
+ecdsa>=0.19,<1           # PA fallback for EC DSC keys with explicit domain
+                         # parameters (Brainpool, e.g. German passports), which
+                         # cryptography refuses to load (MIT)
 
 # Biometrics (face match + liveness), wired in verifier/biometrics.py. Imported
 # lazily; required at runtime for the biometric step. OpenCV bundles the ONNX

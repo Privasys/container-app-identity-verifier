@@ -22,7 +22,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-from asn1crypto import cms, core, x509
+from asn1crypto import cms, core, keys, x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
@@ -81,19 +81,79 @@ class PAResult:
 
 # ── signature verification (vetted primitives) ─────────────────────────────
 
+def _load_public_key(spki_der: bytes):
+    """Load a SubjectPublicKeyInfo into a pyca public key.
+
+    Tolerates RSA keys whose SPKI AlgorithmIdentifier is `id-RSASSA-PSS`
+    (1.2.840.113549.1.1.10) or `id-RSAES-OAEP` (…1.1.7) rather than plain
+    `rsaEncryption`. pyca/cryptography's load_der_public_key rejects those with a
+    ValueError, but they are common on real Document Signer Certificates — e.g.
+    German passports sign EF.SOD with RSASSA-PSS and encode the DSC key as
+    id-RSASSA-PSS. The underlying key bits are an ordinary RSAPublicKey, so we
+    re-wrap them under rsaEncryption and load that; this does not weaken
+    verification — PSS vs PKCS#1 padding is chosen from the signature algorithm,
+    not from the key OID."""
+    try:
+        return load_der_public_key(spki_der)
+    except ValueError:
+        pass
+    info = keys.PublicKeyInfo.load(spki_der)
+    algo = info["algorithm"]["algorithm"].native
+    if algo in ("rsassa_pss", "rsaes_oaep"):
+        rsa_spki = keys.PublicKeyInfo({
+            "algorithm": {"algorithm": "rsa", "parameters": core.Null()},
+            "public_key": info["public_key"].parsed,
+        })
+        return load_der_public_key(rsa_spki.dump())
+    if algo == "ec":
+        # An EC key cryptography won't load directly — almost always explicit EC
+        # domain parameters (common on Brainpool DSCs, e.g. German passports),
+        # which pyca rejects. Signal the python-ecdsa fallback by returning None.
+        return None
+    # Anything else: surface the algorithm so a future failure is self-explanatory
+    # in the logs instead of an opaque ValueError.
+    raise PAError(f"invalid signer public key [{algo}]")
+
+
+def _verify_ec_explicit(hash_algo: str, spki_der: bytes, message: bytes,
+                        signature: bytes) -> None:
+    """Verify an ECDSA signature whose SubjectPublicKeyInfo cryptography cannot
+    load — EC keys carrying explicit domain parameters instead of a named-curve
+    OID, as Brainpool DSCs (e.g. German passports) commonly encode. python-ecdsa
+    parses the explicit parameters, identifies the curve, and verifies. Used only
+    as a fallback; all named-curve EC keys go through pyca."""
+    try:
+        import ecdsa
+        from ecdsa.util import sigdecode_der
+    except ImportError as exc:  # pragma: no cover
+        raise PAError("EC key has explicit parameters and python-ecdsa is unavailable") from exc
+    try:
+        vk = ecdsa.VerifyingKey.from_der(spki_der)
+    except Exception as exc:  # noqa: BLE001
+        raise PAError(f"invalid signer public key [ec: {exc}]") from exc
+    try:
+        vk.verify(signature, message, hashfunc=_HASHLIB[hash_algo],
+                  sigdecode=sigdecode_der)
+    except ecdsa.BadSignatureError as exc:
+        raise PAError("signature verification failed") from exc
+
+
 def _verify_signature(spki_der: bytes, sig_algo: str, hash_algo: str,
                       message: bytes, signature: bytes) -> None:
     """Verify `signature` over `message`. Raises PAError on any failure."""
     if hash_algo not in _HASHES:
         raise PAError(f"unsupported hash algorithm: {hash_algo}")
-    try:
-        pub = load_der_public_key(spki_der)
-    except ValueError as exc:
-        raise PAError("invalid signer public key") from exc
+    pub = _load_public_key(spki_der)
+    if pub is None:
+        _verify_ec_explicit(hash_algo, spki_der, message, signature)
+        return
     h = _HASHES[hash_algo]()
     try:
         if isinstance(pub, rsa.RSAPublicKey):
-            pad = padding.PSS(mgf=padding.MGF1(h), salt_length=padding.PSS.DIGEST_LENGTH) \
+            # AUTO salt length: tolerate non-standard PSS salts on real DSCs
+            # (verification only — the salt length is not a security parameter
+            # the verifier must pin).
+            pad = padding.PSS(mgf=padding.MGF1(h), salt_length=padding.PSS.AUTO) \
                 if sig_algo == "rsassa_pss" else padding.PKCS1v15()
             pub.verify(signature, message, pad, h)
         elif isinstance(pub, ec.EllipticCurvePublicKey):
