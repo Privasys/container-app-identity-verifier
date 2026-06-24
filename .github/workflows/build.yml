@@ -60,10 +60,12 @@ jobs:
       # tools (API Testing) and pre-fills the App Store listing for this package
       # app. The "store" block maps store/listing.json into the ingestion schema
       # (unprefixed field names); listing.json stays the single source of truth.
+      # The manifest is written to a file (not a label: input) because the action's
+      # labels: list is CSV-parsed and strips the quotes inside the JSON; we pass it
+      # to `docker buildx build --label` directly as a single argument instead.
       - name: Compose manifest label
-        id: manifest
         run: |
-          json=$(jq -c '. + {store: (input | {
+          jq -c '. + {store: (input | {
             tagline: .store_tagline,
             description: .store_description,
             category: .store_category,
@@ -74,18 +76,16 @@ jobs:
             support_email: .store_support_email,
             privacy_url: .store_privacy_url,
             tos_url: .store_tos_url
-          })}' privasys.json store/listing.json)
-          echo "json=$json" >> "$GITHUB_OUTPUT"
+          })}' privasys.json store/listing.json > manifest.label.json
 
       - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64
-          provenance: false
-          labels: |
-            org.privasys.manifest=${{ steps.manifest.outputs.json }}
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
-            ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}-${{ github.sha }}
+        run: |
+          MANIFEST="$(cat manifest.label.json)"
+          TAG="${{ steps.tag.outputs.tag }}"
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --label "org.privasys.manifest=${MANIFEST}" \
+            -t "${IMAGE}:${TAG}" \
+            -t "${IMAGE}:${TAG}-${GITHUB_SHA}" \
+            --push .
