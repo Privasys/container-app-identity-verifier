@@ -55,6 +55,28 @@ jobs:
         id: tag
         run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
+      # Embed privasys.json (tools + config_api) plus the App Store listing as the
+      # org.privasys.manifest OCI label, so the management-service auto-detects the
+      # tools (API Testing) and pre-fills the App Store listing for this package
+      # app. The "store" block maps store/listing.json into the ingestion schema
+      # (unprefixed field names); listing.json stays the single source of truth.
+      - name: Compose manifest label
+        id: manifest
+        run: |
+          json=$(jq -c '. + {store: (input | {
+            tagline: .store_tagline,
+            description: .store_description,
+            category: .store_category,
+            keywords: .store_keywords,
+            icon_url: .store_icon_url,
+            screenshots: .store_screenshots,
+            website_url: .store_website_url,
+            support_email: .store_support_email,
+            privacy_url: .store_privacy_url,
+            tos_url: .store_tos_url
+          })}' privasys.json store/listing.json)
+          echo "json=$json" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -62,6 +84,8 @@ jobs:
           push: true
           platforms: linux/amd64
           provenance: false
+          labels: |
+            org.privasys.manifest=${{ steps.manifest.outputs.json }}
           tags: |
             ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
             ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}-${{ github.sha }}
