@@ -17,6 +17,7 @@ APP="container-app-identity-verifier"
 ANCHORS=""
 URL=""
 ATTEST=""
+ENDPOINT=""
 
 usage() {
   cat <<'EOF'
@@ -33,6 +34,10 @@ Options:
                      signer chain itself before extracting the CSCAs.
   --url <url>        Download the master list (.ml) from a URL instead.
   --app <name-or-id> App to configure (default: container-app-identity-verifier).
+  --endpoint <url>   Platform API base URL the CLI targets, e.g.
+                     https://api-test.developer.privasys.org for the dev/test
+                     environment. Defaults to your CLI config (often prod), so
+                     set this if the verifier is deployed elsewhere.
   --attest           Also verify the enclave quote against the attestation server
                      (genuine TEE + TCB), not just RA-TLS locally.
 
@@ -49,8 +54,9 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --anchors) ANCHORS="${2:-}"; shift 2;;
     --url)     URL="${2:-}"; shift 2;;
-    --app)     APP="${2:-}"; shift 2;;
-    --attest)  ATTEST="--attest"; shift;;
+    --app)      APP="${2:-}"; shift 2;;
+    --endpoint) ENDPOINT="${2:-}"; shift 2;;
+    --attest)   ATTEST="--attest"; shift;;
     -h|--help) usage; exit 0;;
     *) echo "error: unknown argument: $1" >&2; usage; exit 2;;
   esac
@@ -100,7 +106,7 @@ echo "Configuring '$APP' over RA-TLS ..." >&2
 # --no-challenge: the bundled CLI uses deterministic verify; the fresh-nonce
 # challenge needs the Privasys/go RA-TLS fork. Your access token is presented to
 # the app for owner auth; the control plane is never in the data path.
-privasys apps call "$APP" configure --data "@$body" --no-challenge $ATTEST
+privasys apps call "$APP" configure ${ENDPOINT:+--endpoint "$ENDPOINT"} --data "@$body" --no-challenge $ATTEST
 
 echo >&2
 echo "Done. The response above carries trust_anchors_digest (SHA-256 of the active" >&2

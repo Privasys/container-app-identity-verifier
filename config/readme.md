@@ -37,7 +37,15 @@ config/initialise.sh --anchors csca-bundle.pem
 
 # Target a specific deployment (name or id), and verify the quote too:
 config/initialise.sh --anchors ICAO_ML.ml --app container-app-identity-verifier --attest
+
+# Target a non-default environment (the CLI default endpoint is often prod):
+config/initialise.sh --anchors ICAO_ML.ml --endpoint https://api-test.developer.privasys.org
 ```
+
+If your CLI is pointed at a different platform than the one the verifier is
+deployed on, `apps call` resolves the app on the wrong environment and reports
+"no app named …". Pass `--endpoint` (or set it with `privasys config set
+endpoint <url>`) so it targets the right one.
 
 A successful run prints:
 
