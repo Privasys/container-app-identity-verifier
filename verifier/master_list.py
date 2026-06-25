@@ -81,13 +81,15 @@ def _verify_chain_to_root(
     raise MasterListError("master-list signer does not chain to a root in the list")
 
 
-def verify_and_extract(ml_bytes: bytes, expected_root_sha256: str = ICAO_ML_ROOT_SHA256) -> bytes:
+def verify_and_extract(ml_bytes: bytes, expected_root_sha256: str | None = None) -> bytes:
     """Verify a CSCA Master List CMS and return its CSCA certs as a PEM bundle.
 
     The list's signer must chain to the pinned ICAO/UN CSCA root
-    (`expected_root_sha256`, defaulting to the genuine one); only tests override
-    it. There is no unsigned/raw path: an unverifiable list is rejected.
+    (`expected_root_sha256`, defaulting to ICAO_ML_ROOT_SHA256; only tests
+    override it). There is no unsigned/raw path: an unverifiable list is rejected.
     """
+    if expected_root_sha256 is None:
+        expected_root_sha256 = ICAO_ML_ROOT_SHA256
     try:
         ci = cms.ContentInfo.load(ml_bytes)
     except Exception as exc:  # noqa: BLE001

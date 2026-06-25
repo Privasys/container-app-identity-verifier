@@ -4,6 +4,7 @@
 """End-to-end HTTP test: configure → verify-identity (real PA + MRZ) → prove."""
 
 import base64
+import hashlib
 import json
 import threading
 import time
@@ -15,7 +16,18 @@ import pytest
 
 import fixtures
 import main
-from verifier import biometrics, config, crypto, receipt
+from verifier import biometrics, config, crypto, master_list, receipt
+
+
+def _configure_with_csca(base, monkeypatch, cscas):
+    """Configure the running verifier with a synthetic master list containing
+    `cscas`, pinning the verifier to that list's (synthetic) ICAO root for the
+    test. Returns the configure HTTP status."""
+    root_key, root = fixtures.self_signed_ca("Test ICAO Root")
+    monkeypatch.setattr(master_list, "ICAO_ML_ROOT_SHA256",
+                        hashlib.sha256(fixtures.cert_der(root)).hexdigest())
+    ml = fixtures.build_master_list(root_key, root, root.subject, cscas)
+    return _req(base, "POST", "/configure", {"master_list_cms": _b64(ml)})[0]
 
 
 @pytest.fixture()
@@ -46,16 +58,16 @@ def _b64(b: bytes) -> str:
     return base64.b64encode(b).decode()
 
 
-def test_end_to_end(server):
+def test_end_to_end(server, monkeypatch):
     base = server
 
     assert _req(base, "GET", "/health")[0] == 200
 
-    # Build a real SOD + DG1 chain and configure the CSCA as trust anchor.
+    # Build a real SOD + DG1 chain and configure its CSCA via a (synthetic,
+    # pinned) ICAO master list.
     dg1 = fixtures.build_dg1()
     sod, csca, _ = fixtures.build_chain({1: dg1})
-    assert _req(base, "POST", "/configure",
-                {"trust_anchors_pem": fixtures.cert_pem(csca).decode()})[0] == 200
+    assert _configure_with_csca(base, monkeypatch, [csca]) == 200
 
     holder = crypto.SigningKey.generate()
     holder_pub = holder.public().raw()
@@ -86,11 +98,11 @@ def test_end_to_end(server):
     assert payload["aud"] == rp and payload["assurance"] == "gov"
 
 
-def test_verify_identity_rejects_untrusted_document(server):
+def test_verify_identity_rejects_untrusted_document(server, monkeypatch):
     base = server
     # Configure trust anchor A, but present a SOD signed under a different chain.
     _sod_a, csca_a, _ = fixtures.build_chain({1: fixtures.build_dg1()})
-    _req(base, "POST", "/configure", {"trust_anchors_pem": fixtures.cert_pem(csca_a).decode()})
+    assert _configure_with_csca(base, monkeypatch, [csca_a]) == 200
 
     dg1 = fixtures.build_dg1()
     sod_b, _csca_b, _ = fixtures.build_chain({1: dg1})  # different CSCA

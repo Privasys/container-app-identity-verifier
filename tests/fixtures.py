@@ -12,7 +12,57 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
+from verifier import master_list
 from verifier.passive_auth import LDS_SECURITY_OBJECT_OID, LDSSecurityObject
+
+
+def self_signed_ca(cn: str):
+    """A self-signed CA key+cert (a synthetic root CSCA, or a country CSCA)."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    return key, _cert(_name(cn), _name(cn), key, key, ca=True)
+
+
+def build_master_list(root_key, root_cert, signer_issuer, cscas):
+    """A CSCA Master List CMS signed by an ML signer that `root_key` issues, with
+    `cscas` (cryptography certs) as the contained country CSCAs. Tests pin the
+    verifier to `root_cert`'s SHA-256 to accept it."""
+    ml_key = ec.generate_private_key(ec.SECP256R1())
+    ml_signer = _cert(_name("Test ML Signer"), signer_issuer, ml_key, root_key, ca=False)
+
+    mld = master_list._CscaMasterListData({
+        "version": 0,
+        "cert_list": [a_x509.Certificate.load(cert_der(c)) for c in cscas],
+    })
+    econtent = mld.dump()
+
+    signed_attrs = cms.CMSAttributes([
+        cms.CMSAttribute({"type": "content_type", "values": [master_list.CSCA_MASTER_LIST_OID]}),
+        cms.CMSAttribute({"type": "message_digest", "values": [hashlib.sha256(econtent).digest()]}),
+    ])
+    signature = ml_key.sign(signed_attrs.dump(), ec.ECDSA(hashes.SHA256()))
+
+    ml_signer_a = a_x509.Certificate.load(cert_der(ml_signer))
+    root_a = a_x509.Certificate.load(cert_der(root_cert))
+    signer = cms.SignerInfo({
+        "version": "v1",
+        "sid": cms.SignerIdentifier({"issuer_and_serial_number": cms.IssuerAndSerialNumber(
+            {"issuer": ml_signer_a.issuer, "serial_number": ml_signer_a.serial_number})}),
+        "digest_algorithm": {"algorithm": "sha256"},
+        "signed_attrs": signed_attrs,
+        "signature_algorithm": {"algorithm": "sha256_ecdsa"},
+        "signature": signature,
+    })
+    sd = cms.SignedData({
+        "version": "v3",
+        "digest_algorithms": [{"algorithm": "sha256"}],
+        "encap_content_info": {"content_type": master_list.CSCA_MASTER_LIST_OID, "content": econtent},
+        "certificates": [
+            cms.CertificateChoices({"certificate": ml_signer_a}),
+            cms.CertificateChoices({"certificate": root_a}),
+        ],
+        "signer_infos": [signer],
+    })
+    return cms.ContentInfo({"content_type": "signed_data", "content": sd}).dump()
 
 # A valid TD3 (passport) MRZ for "ALICE DOE", GBR, born 2000-01-01, expiry
 # 2030-01-01. Two 44-char lines concatenated.
