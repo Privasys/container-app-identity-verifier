@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Privasys Identity Verifier">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#34E89E"/>
+      <stop offset="1" stop-color="#00BCF2"/>
+    </linearGradient>
+  </defs>
+
+  <!-- App tile -->
+  <rect width="1024" height="1024" rx="232" fill="url(#bg)"/>
+
+  <!-- ID card -->
+  <rect x="208" y="284" width="608" height="420" rx="56" fill="#FFFFFF"/>
+  <!-- portrait -->
+  <circle cx="356" cy="436" r="80" fill="#D7E3EC"/>
+  <circle cx="356" cy="412" r="30" fill="#9FB6C6"/>
+  <path d="M304 492a52 52 0 0 1 104 0z" fill="#9FB6C6"/>
+  <!-- data lines -->
+  <rect x="480" y="398" width="240" height="34" rx="17" fill="#C7D6E2"/>
+  <rect x="480" y="468" width="180" height="28" rx="14" fill="#DCE6EE"/>
+  <!-- MRZ band -->
+  <rect x="252" y="600" width="520" height="56" rx="20" fill="#EEF3F7"/>
+  <g fill="#B7C7D4">
+    <rect x="276" y="620" width="150" height="16" rx="8"/>
+    <rect x="446" y="620" width="96" height="16" rx="8"/>
+    <rect x="562" y="620" width="186" height="16" rx="8"/>
+  </g>
+
+  <!-- Verified badge -->
+  <circle cx="744" cy="664" r="118" fill="#FFFFFF"/>
+  <circle cx="744" cy="664" r="96" fill="#16A34A"/>
+  <path d="M699 666l30 30 60-64" fill="none" stroke="#FFFFFF" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

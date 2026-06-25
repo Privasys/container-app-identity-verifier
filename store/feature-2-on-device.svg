@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#34E89E"/>
+      <stop offset="1" stop-color="#00BCF2"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1600" height="900" fill="#F4F7FA"/>
+
+  <rect x="120" y="104" width="40" height="40" rx="11" fill="url(#brand)"/>
+  <text x="180" y="132" font-size="26" font-weight="700" letter-spacing="2" fill="#5B7185">PRIVASYS IDENTITY VERIFIER</text>
+
+  <text x="120" y="262" font-size="78" font-weight="800" fill="#0B1F33">Your passport never leaves</text>
+  <text x="120" y="350" font-size="78" font-weight="800" fill="#0B1F33">your device</text>
+  <text x="120" y="416" font-size="36" fill="#5B7185">The chip, photo and selfie are checked in memory inside a secure enclave, then discarded.</text>
+
+  <!-- phone -->
+  <rect x="170" y="500" width="260" height="300" rx="34" fill="#FFFFFF" stroke="#E2EAF1" stroke-width="2"/>
+  <rect x="206" y="546" width="188" height="120" rx="14" fill="#EEF3F7"/>
+  <circle cx="248" cy="592" r="26" fill="#C7D6E2"/>
+  <rect x="290" y="572" width="86" height="16" rx="8" fill="#D4DFE8"/>
+  <rect x="290" y="602" width="64" height="14" rx="7" fill="#DFE8EF"/>
+  <text x="300" y="724" font-size="26" font-weight="700" fill="#5B7185" text-anchor="middle">Your data</text>
+  <text x="300" y="756" font-size="22" fill="#8497A8" text-anchor="middle">stays here</text>
+
+  <!-- flow arrows -->
+  <path d="M450 650h150" stroke="#9AAAB8" stroke-width="8" stroke-linecap="round"/>
+  <path d="M588 630l28 20-28 20" fill="none" stroke="#9AAAB8" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- enclave -->
+  <rect x="630" y="500" width="340" height="300" rx="28" fill="#0B1F33"/>
+  <rect x="630" y="500" width="340" height="300" rx="28" fill="url(#brand)" opacity="0.12"/>
+  <g transform="translate(800 600)">
+    <rect x="-46" y="-12" width="92" height="78" rx="14" fill="none" stroke="#34E89E" stroke-width="9"/>
+    <path d="M-28 -12v-22a28 28 0 0 1 56 0v22" fill="none" stroke="#34E89E" stroke-width="9"/>
+  </g>
+  <text x="800" y="724" font-size="26" font-weight="700" fill="#FFFFFF" text-anchor="middle">Secure enclave</text>
+  <text x="800" y="756" font-size="22" fill="#9FE9CB" text-anchor="middle">checks, never stores</text>
+
+  <!-- arrows to receipt -->
+  <path d="M990 650h150" stroke="#9AAAB8" stroke-width="8" stroke-linecap="round"/>
+  <path d="M1128 630l28 20-28 20" fill="none" stroke="#9AAAB8" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- receipt -->
+  <rect x="1170" y="500" width="300" height="300" rx="28" fill="#FFFFFF" stroke="#E2EAF1" stroke-width="2"/>
+  <circle cx="1320" cy="588" r="42" fill="#16A34A"/>
+  <path d="M1300 589l13 13 27-30" fill="none" stroke="#FFFFFF" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="1210" y="664" width="220" height="16" rx="8" fill="#D7E3EC"/>
+  <rect x="1210" y="698" width="160" height="16" rx="8" fill="#E3ECF2"/>
+  <text x="1320" y="764" font-size="24" font-weight="700" fill="#5B7185" text-anchor="middle">Signed receipt</text>
+</svg>

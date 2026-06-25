@@ -65,6 +65,7 @@ jobs:
       # to `docker buildx build --label` directly as a single argument instead.
       - name: Compose manifest label
         run: |
+          # Base map: store/listing.json -> manifest "store" block.
           jq -c '. + {store: (input | {
             tagline: .store_tagline,
             description: .store_description,
@@ -76,7 +77,20 @@ jobs:
             support_email: .store_support_email,
             privacy_url: .store_privacy_url,
             tos_url: .store_tos_url
-          })}' privasys.json store/listing.json > manifest.label.json
+          })}' privasys.json store/listing.json > manifest.base.json
+
+          # Embed the referenced store assets (icon + screenshots) as base64, keyed
+          # by filename, so the platform imports them into portal storage (the asset
+          # bucket) instead of hotlinking an external website.
+          files=$(jq -r '([.store_icon_url] + (.store_screenshots // []))[]' store/listing.json)
+          assets='{}'
+          for f in $files; do
+            if [ -f "store/$f" ]; then
+              b64=$(base64 -w0 "store/$f")
+              assets=$(printf '%s' "$assets" | jq -c --arg k "$f" --arg v "$b64" '. + {($k): $v}')
+            fi
+          done
+          jq -c --argjson assets "$assets" '.store.assets = $assets' manifest.base.json > manifest.label.json
 
       - name: Build and push
         run: |
