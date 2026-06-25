@@ -134,16 +134,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json(400, {"error": "invalid JSON body"})
             return
         try:
-            # Trust anchors may be supplied as a raw ICAO CSCA Master List (the
-            # verifier validates its signature + chain, then stores the contained
-            # CSCAs) or as a ready PEM bundle.
+            # Trust anchors are supplied ONLY as a raw ICAO CSCA Master List: the
+            # verifier validates its CMS signature and that it chains to the pinned
+            # ICAO/UN CSCA root, then stores the contained CSCAs. There is no raw,
+            # unsigned anchor path — that would defeat the verification.
             ml_b64 = body.get("master_list_cms")
-            pem = body.get("trust_anchors_pem")
-            if ml_b64:
-                import base64
-                trust_anchors.set_anchors(master_list.verify_and_extract(base64.b64decode(ml_b64)))
-            elif pem:
-                trust_anchors.set_anchors(pem.encode("utf-8"))
+            if not ml_b64:
+                self._json(400, {"error": "master_list_cms (base64 ICAO CSCA Master List) is required"})
+                return
+            import base64
+            trust_anchors.set_anchors(master_list.verify_and_extract(base64.b64decode(ml_b64)))
             if manager.available():
                 manager.config_complete()
         except master_list.MasterListError as exc:
@@ -237,10 +237,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return receipt.prove_document_valid(_SIGNING_KEY, ivr, sub, rp_id)
 
     def _set_trust_anchors(self, body: dict) -> None:
-        # PROD: gate to the app owner / trust-anchor admin (owner bearer), and
-        # validate the master list before swapping (kyc-enclave-design §7.4).
-        pem = _require(body, "pem")
-        digest = trust_anchors.set_anchors(pem.encode("utf-8"))
+        # Rotate the anchor set at runtime. Same validation as /configure: only a
+        # genuine ICAO CSCA Master List (CMS-verified, chaining to the pinned
+        # ICAO/UN CSCA root) is accepted, never a raw PEM bundle.
+        # PROD: also gate to the app owner / trust-anchor admin (owner bearer).
+        import base64
+        ml_b64 = _require(body, "master_list_cms")
+        pem = master_list.verify_and_extract(base64.b64decode(ml_b64))
+        digest = trust_anchors.set_anchors(pem)
         self._json(200, {"digest": digest, "count": trust_anchors.count(),
                          "oid": config.TRUST_ANCHORS_OID})
 

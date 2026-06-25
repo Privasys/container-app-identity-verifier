@@ -25,8 +25,16 @@ from . import passive_auth
 # id-icao-cscaMasterList (ICAO Doc 9303 Part 12).
 CSCA_MASTER_LIST_OID = "2.23.136.1.1.2"
 
+# SHA-256 (DER) of the pinned trust root for the master list: the United Nations
+# CSCA that signs the ICAO Master List Signer (ICAO Doc 9303 Part 12). The list
+# must chain to THIS root, not merely to any self-signed certificate carried
+# inside it — otherwise a forged master list bundling its own self-signed "root"
+# would verify and its CSCAs would be trusted. Only this single, stable meta-root
+# is fixed; the per-country CSCAs still come from the list at runtime.
+ICAO_ML_ROOT_SHA256 = "920693cd1283824ffdf48a3579fc35528122f3de46bab2ecdaef402db6d92e4e"
 
-class MasterListError(Exception):
+
+class MasterListError(ValueError):
     """The master list could not be parsed or verified."""
 
 
@@ -37,8 +45,12 @@ class _CscaMasterListData(core.Sequence):
     ]
 
 
-def _verify_chain_to_root(signer: x509.Certificate, certs: list[x509.Certificate]) -> None:
-    """Verify the ML signer chains to a self-signed root present in the list."""
+def _verify_chain_to_root(
+    signer: x509.Certificate,
+    certs: list[x509.Certificate],
+    expected_root_sha256: str,
+) -> None:
+    """Verify the ML signer chains to the pinned self-signed root in the list."""
     issuer = signer.issuer
     for ca in certs:
         if ca.subject != issuer:
@@ -55,15 +67,27 @@ def _verify_chain_to_root(signer: x509.Certificate, certs: list[x509.Certificate
             continue
         # The CA that signed the ML signer must itself be a trust root: self-signed.
         if ca.subject == ca.issuer:
+            # ...and it must be the PINNED root, not just any self-signed cert
+            # bundled in the (untrusted) list.
+            actual = hashlib.sha256(ca.dump()).hexdigest()
+            if actual != expected_root_sha256:
+                raise MasterListError(
+                    f"master-list root is not the pinned ICAO/UN CSCA (got {actual})"
+                )
             return
         # Otherwise climb one more level (the root that signed this CA).
-        _verify_chain_to_root(ca, certs)
+        _verify_chain_to_root(ca, certs, expected_root_sha256)
         return
     raise MasterListError("master-list signer does not chain to a root in the list")
 
 
-def verify_and_extract(ml_bytes: bytes) -> bytes:
-    """Verify a CSCA Master List CMS and return its CSCA certs as a PEM bundle."""
+def verify_and_extract(ml_bytes: bytes, expected_root_sha256: str = ICAO_ML_ROOT_SHA256) -> bytes:
+    """Verify a CSCA Master List CMS and return its CSCA certs as a PEM bundle.
+
+    The list's signer must chain to the pinned ICAO/UN CSCA root
+    (`expected_root_sha256`, defaulting to the genuine one); only tests override
+    it. There is no unsigned/raw path: an unverifiable list is rejected.
+    """
     try:
         ci = cms.ContentInfo.load(ml_bytes)
     except Exception as exc:  # noqa: BLE001
@@ -106,9 +130,9 @@ def verify_and_extract(ml_bytes: bytes) -> bytes:
     except passive_auth.PAError as exc:
         raise MasterListError(f"master-list signature invalid: {exc}") from exc
 
-    # 2. Chain the ML signer to a self-signed root carried in the list.
+    # 2. Chain the ML signer to the pinned ICAO/UN CSCA root carried in the list.
     certs = [c.chosen for c in sd["certificates"] if c.name == "certificate"]
-    _verify_chain_to_root(ml_signer, certs)
+    _verify_chain_to_root(ml_signer, certs, expected_root_sha256)
 
     # 3. Extract the CSCA certificates (deduped) as a PEM bundle.
     mld = _CscaMasterListData.load(bytes(econtent))

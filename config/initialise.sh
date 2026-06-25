@@ -1,63 +1,61 @@
 #!/usr/bin/env bash
 #
-# Configure (unfreeze) a deployed Privasys Identity Verifier by loading its CSCA
-# trust anchors over RA-TLS. The app boots frozen (503 on every path but
+# Configure (unfreeze) a deployed Privasys Identity Verifier by loading the ICAO
+# CSCA Master List over RA-TLS. The app boots frozen (503 on every path but
 # /health, /version, /.well-known/jwks.json and /configure) until trust anchors
-# are loaded; this script sources them, builds the request body, and POSTs it to
+# are loaded; this script base64-encodes the master list and POSTs it to
 # /configure with the Privasys CLI. See config/readme.md for the full runbook.
 #
-# Steps performed:
-#   1. source the CSCA anchors (a local file, or downloaded from --url)
-#   2. build the /configure request body (master_list_cms or trust_anchors_pem)
-#   3. call <app> /configure over RA-TLS with `privasys apps call`
+# Only the ICAO CSCA Master List (a CMS .ml) is accepted: the enclave validates
+# its CMS signature and that it chains to the pinned ICAO/UN CSCA root before
+# extracting the country CSCAs. There is no raw-PEM / arbitrary-anchor path.
 #
 set -euo pipefail
 
 APP="container-app-identity-verifier"
-ANCHORS=""
+ML=""
 URL=""
 ATTEST=""
 ENDPOINT=""
 
 usage() {
   cat <<'EOF'
-Load CSCA trust anchors into a deployed identity verifier (lifts the
+Load the ICAO CSCA Master List into a deployed identity verifier (lifts the
 configure-then-freeze gate).
 
 Usage:
-  config/initialise.sh --anchors <ICAO_ML.ml | csca-bundle.pem> [--app <name-or-id>] [--attest]
-  config/initialise.sh --url <https://.../master-list.ml>        [--app <name-or-id>] [--attest]
+  config/initialise.sh --ml <ICAO_ML.ml>            [--app <name-or-id>] [--endpoint <url>] [--attest]
+  config/initialise.sh --url <https://.../ml.ml>    [--app <name-or-id>] [--endpoint <url>] [--attest]
 
 Options:
-  --anchors <file>   ICAO/national CSCA Master List (CMS .ml) OR a PEM bundle of
-                     CSCA roots. The verifier validates the CMS signature and the
-                     signer chain itself before extracting the CSCAs.
+  --ml <file>        ICAO/national CSCA Master List as a CMS .ml. The enclave
+                     verifies its signature and that it chains to the pinned
+                     ICAO/UN CSCA root, then extracts the CSCAs.
   --url <url>        Download the master list (.ml) from a URL instead.
   --app <name-or-id> App to configure (default: container-app-identity-verifier).
   --endpoint <url>   Platform API base URL the CLI targets, e.g.
-                     https://api-test.developer.privasys.org for the dev/test
-                     environment. Defaults to your CLI config (often prod), so
-                     set this if the verifier is deployed elsewhere.
+                     https://api-test.developer.privasys.org for dev/test.
+                     Defaults to your CLI config (often prod), so set this if the
+                     verifier is deployed elsewhere.
   --attest           Also verify the enclave quote against the attestation server
                      (genuine TEE + TCB), not just RA-TLS locally.
 
 Requires the `privasys` CLI on PATH and an authenticated session
-(`privasys auth login`) as an owner of the app. The anchors must include the
-CSCA of every issuing country you intend to verify (e.g. the German CSCA for a
-German passport). This is the root of trust for Passive Authentication: source
-it deliberately (ICAO PKD or a trusted national master list), never an arbitrary
+(`privasys auth login`) as an owner of the app. The master list must be the
+genuine ICAO one (or chain to the same ICAO/UN CSCA root); anything else is
+rejected by the enclave. Source it deliberately (ICAO PKD), never an arbitrary
 file off the internet.
 EOF
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --anchors) ANCHORS="${2:-}"; shift 2;;
-    --url)     URL="${2:-}"; shift 2;;
+    --ml)       ML="${2:-}"; shift 2;;
+    --url)      URL="${2:-}"; shift 2;;
     --app)      APP="${2:-}"; shift 2;;
     --endpoint) ENDPOINT="${2:-}"; shift 2;;
     --attest)   ATTEST="--attest"; shift;;
-    -h|--help) usage; exit 0;;
+    -h|--help)  usage; exit 0;;
     *) echo "error: unknown argument: $1" >&2; usage; exit 2;;
   esac
 done
@@ -70,29 +68,16 @@ trap 'rm -rf "$workdir"' EXIT
 
 if [ -n "$URL" ]; then
   echo "Downloading master list from $URL ..." >&2
-  curl -fsSL "$URL" -o "$workdir/anchors.ml"
-  ANCHORS="$workdir/anchors.ml"
+  curl -fsSL "$URL" -o "$workdir/ml.ml"
+  ML="$workdir/ml.ml"
 fi
 
-[ -n "$ANCHORS" ] || { echo "error: provide --anchors <file> or --url <url>" >&2; usage; exit 2; }
-[ -f "$ANCHORS" ] || { echo "error: anchors file not found: $ANCHORS" >&2; exit 1; }
+[ -n "$ML" ] || { echo "error: provide --ml <file> or --url <url>" >&2; usage; exit 2; }
+[ -f "$ML" ] || { echo "error: master list not found: $ML" >&2; exit 1; }
 
-# Build the /configure body. Detect a PEM bundle vs a CMS master list (.ml) by
-# sniffing for the PEM header; everything else is treated as binary CMS.
+# Build the /configure body: {"master_list_cms": "<base64 of the .ml>"}.
 body="$workdir/configure.json"
-if head -c 64 "$ANCHORS" 2>/dev/null | grep -q "BEGIN CERTIFICATE"; then
-  echo "Anchors detected as a PEM bundle." >&2
-  python3 - "$ANCHORS" "$body" <<'PY'
-import json, sys
-src, dst = sys.argv[1], sys.argv[2]
-with open(src, encoding="utf-8") as f:
-    pem = f.read()
-with open(dst, "w", encoding="utf-8") as f:
-    json.dump({"trust_anchors_pem": pem}, f)
-PY
-else
-  echo "Anchors detected as a CMS master list (.ml)." >&2
-  python3 - "$ANCHORS" "$body" <<'PY'
+python3 - "$ML" "$body" <<'PY'
 import json, base64, sys
 src, dst = sys.argv[1], sys.argv[2]
 with open(src, "rb") as f:
@@ -100,7 +85,6 @@ with open(src, "rb") as f:
 with open(dst, "w", encoding="utf-8") as f:
     json.dump({"master_list_cms": cms}, f)
 PY
-fi
 
 echo "Configuring '$APP' over RA-TLS ..." >&2
 # --no-challenge: the bundled CLI uses deterministic verify; the fresh-nonce
