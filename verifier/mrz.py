@@ -168,6 +168,27 @@ def _check_digit(field: str) -> str:
     return str(sum(_char_value(c) * _CD_WEIGHTS[i % 3] for i, c in enumerate(field)) % 10)
 
 
+def check_digits_consistent(dg1: bytes) -> bool:
+    """True when the TD3 MRZ in DG1 has self-consistent ICAO check digits
+    (document number, birth date, expiry, and the line-2 composite). A
+    Passive-Auth-genuine DG1 always satisfies this, so it is a data-quality
+    signal rather than a security gate."""
+    try:
+        mrz = "".join(_mrz_string(dg1).split()).upper()
+    except MRZError:
+        return False
+    if len(mrz) != 88:
+        return False
+    l2 = mrz[44:88]
+    if not (_check_digit(l2[0:9]) == l2[9]          # document number
+            and _check_digit(l2[13:19]) == l2[19]   # date of birth
+            and _check_digit(l2[21:27]) == l2[27]):  # date of expiry
+        return False
+    # Composite (ICAO TD3): doc# + cd, DOB + cd, expiry + cd + optional + opt cd.
+    composite = l2[0:10] + l2[13:20] + l2[21:43]
+    return _check_digit(composite) == l2[43]
+
+
 # OCR-B look-alikes the recognizer genuinely confuses (both directions for the
 # alphanumeric document number; letter→digit for the all-numeric date fields).
 # The MRZ check digit lets us pick the right one deterministically: e.g. a doc
@@ -273,6 +294,10 @@ def _date(yymmdd: str, *, birth: bool) -> str:
     if len(yymmdd) != 6 or not yymmdd.isdigit():
         raise MRZError(f"bad MRZ date {yymmdd!r}")
     yy, mm, dd = int(yymmdd[0:2]), yymmdd[2:4], yymmdd[4:6]
+    # Reject a garbled date. "00" is allowed for an unknown birth month/day
+    # (ICAO 9303), so only an out-of-range month/day is a hard error.
+    if int(mm) > 12 or int(dd) > 31:
+        raise MRZError(f"out-of-range MRZ date {yymmdd!r}")
     pivot = datetime.now(timezone.utc).year % 100
     if birth:
         century = 1900 if yy > pivot else 2000

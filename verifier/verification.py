@@ -18,6 +18,7 @@ Authentication + biometric holder-binding are the v1 gates.
 from __future__ import annotations
 
 import base64
+import datetime
 from dataclasses import dataclass
 
 from . import biometrics, mrz, passive_auth, trust_anchors
@@ -38,6 +39,10 @@ class DocResult:
     chip_auth: bool       # Active/Chip Authentication (anti-clone); TODO
     viz_match: bool | None = None  # GPG45 box 3: OCR'd visual MRZ == chip DG1 MRZ
                                    # (None = not supplied by the client)
+    not_expired: bool = True       # document expiry > today (hard-gated below)
+    mrz_valid: bool = True         # DG1 MRZ check digits are self-consistent
+    dsc_time_valid: bool | None = None  # DSC+CSCA verified valid at SOD signingTime
+                                        # (None = SOD carried no signingTime)
 
 
 def _b64(s: str) -> bytes:
@@ -83,6 +88,23 @@ def authenticate_and_extract(body: dict) -> tuple[DocResult, dict]:
         except mrz.MRZError:
             pass
 
+    # Hard gate: reject an expired document. The MRZ expiry is the last day the
+    # document is valid, so it is expired only strictly before today (UTC).
+    expiry = fields.get("doc_expiry", "")
+    try:
+        exp_date = datetime.date.fromisoformat(expiry) if expiry else None
+    except ValueError as exc:
+        raise VerificationError(f"invalid document expiry date {expiry!r}") from exc
+    if exp_date is None:
+        raise VerificationError("document has no expiry date")
+    if exp_date < datetime.datetime.now(datetime.timezone.utc).date():
+        raise VerificationError(f"document expired on {expiry}")
+
+    # Soft signal: DG1 MRZ check-digit self-consistency. On a Passive-Auth-genuine
+    # DG1 this is always true (ICAO-mandated), so a false here is recorded for the
+    # relying party rather than hard-failing a genuine (if oddly encoded) chip.
+    mrz_valid = mrz.check_digits_consistent(dgs[1])
+
     # GPG45 box 3 (M1C) — cross-reference the *visual* data against the chip. The
     # wallet sends the data-page image; we OCR it here with OmniMRZ (the on-device
     # OCR is unreliable on OCR-B) and check the read is consistent with DG1. The
@@ -111,6 +133,9 @@ def authenticate_and_extract(body: dict) -> tuple[DocResult, dict]:
         passive_auth=True,
         chip_auth=False,  # AA/CA not yet wired (see module docstring)
         viz_match=viz_match,
+        not_expired=True,  # enforced above; recorded for the receipt
+        mrz_valid=mrz_valid,
+        dsc_time_valid=True if pa.signing_time_verified else None,
     ), dgs
 
 

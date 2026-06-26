@@ -58,6 +58,9 @@ def build_ivr(
             "doc_type": doc.doc_type,
             "issuing_state": doc.issuing_state,
             "doc_expiry": doc.doc_expiry,
+            "not_expired": doc.not_expired,
+            "dsc_time_valid": doc.dsc_time_valid,
+            "mrz_valid": doc.mrz_valid,
         },
         "biometric": {
             "face_match": bio.face_match,

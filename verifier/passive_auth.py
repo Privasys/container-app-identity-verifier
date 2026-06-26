@@ -77,6 +77,10 @@ class PAResult:
     dg_hashes: dict[int, bytes]  # data-group number → expected hash
     dsc_subject: str
     issuing_country: str         # DSC subject country (ISO 3166-1 alpha-2)
+    # True when the SOD carried a signingTime and the DSC + CSCA were verified
+    # valid at that instant; None-equivalent (False) when no signingTime was
+    # present (the cert time could not be bound to the signing event).
+    signing_time_verified: bool = False
 
 
 # ── signature verification (vetted primitives) ─────────────────────────────
@@ -229,7 +233,16 @@ def verify(sod_der: bytes, trust_anchors_der: list[bytes]) -> PAResult:
                       to_verify, signer["signature"].native)
 
     # 2. Chain the DSC to a trusted CSCA.
-    _verify_dsc_chain(dsc, trust_anchors_der)
+    csca = _verify_dsc_chain(dsc, trust_anchors_der)
+
+    # 2b. The DSC + its CSCA must have been valid at the time the SOD was signed.
+    # A document is signed during the DSC's (short) validity, and the document
+    # then remains usable past the DSC's expiry, so we check at signingTime, not
+    # "now". When the SOD carries no signingTime, the instant is unknown and we
+    # apply only a sanity check (well-formed validity period).
+    signing_time = _signing_time(signed_attrs)
+    _check_validity(dsc, signing_time, "DSC")
+    _check_validity(csca, signing_time, "CSCA")
 
     # 3. Parse the LDS Security Object → per-DG hashes.
     lds = LDSSecurityObject.load(bytes(econtent))
@@ -246,6 +259,7 @@ def verify(sod_der: bytes, trust_anchors_der: list[bytes]) -> PAResult:
         dg_hashes=dg_hashes,
         dsc_subject=dsc.subject.human_friendly,
         issuing_country=_country(dsc),
+        signing_time_verified=signing_time is not None,
     )
 
 
@@ -295,7 +309,8 @@ def _check_message_digest(signed_attrs, digest_algo: str, econtent: bytes) -> No
         raise PAError("messageDigest does not match eContent (tampered)")
 
 
-def _verify_dsc_chain(dsc: x509.Certificate, trust_anchors_der: list[bytes]) -> None:
+def _verify_dsc_chain(dsc: x509.Certificate, trust_anchors_der: list[bytes]) -> x509.Certificate:
+    """Verify the DSC chains to a trusted CSCA; return the matched CSCA."""
     if not trust_anchors_der:
         raise PAError("no CSCA trust anchors configured")
     anchors = [x509.Certificate.load(a) for a in trust_anchors_der]
@@ -321,10 +336,31 @@ def _verify_dsc_chain(dsc: x509.Certificate, trust_anchors_der: list[bytes]) -> 
                 dsc["tbs_certificate"].dump(),
                 dsc["signature_value"].native,
             )
-            return
+            return csca
         except PAError as exc:
             last_err = exc
     raise PAError("DSC does not chain to any trusted CSCA for this issuer") from last_err
+
+
+def _signing_time(signed_attrs) -> "datetime | None":
+    """The CMS signingTime signed attribute (when present), else None. eMRTD SODs
+    may omit it; we then cannot bind cert validity to the signing instant."""
+    if not signed_attrs:
+        return None
+    for attr in signed_attrs:
+        if attr["type"].native == "signing_time":
+            return attr["values"][0].native
+    return None
+
+
+def _check_validity(cert: x509.Certificate, at: "datetime | None", label: str) -> None:
+    """Reject a malformed validity period, and (when `at` is known) a certificate
+    that was not valid at that instant."""
+    nb, na = cert.not_valid_before, cert.not_valid_after
+    if na < nb:
+        raise PAError(f"{label} certificate has a malformed validity period")
+    if at is not None and not (nb <= at <= na):
+        raise PAError(f"{label} certificate was not valid at the signing time")
 
 
 def _country(cert: x509.Certificate) -> str:

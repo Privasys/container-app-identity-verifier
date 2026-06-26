@@ -112,3 +112,19 @@ def test_verify_identity_rejects_untrusted_document(server, monkeypatch):
         "sod": _b64(sod_b), "data_groups": {"1": _b64(dg1)},
     })
     assert status == 400  # passive authentication fails (untrusted CSCA)
+
+
+def test_verify_identity_rejects_expired_document(server, monkeypatch):
+    base = server
+    l2 = list(fixtures.SAMPLE_MRZ[44:88])
+    l2[21:27] = "200101"  # expiry 2020-01-01 (past)
+    dg1 = fixtures.build_dg1(fixtures.SAMPLE_MRZ[:44] + "".join(l2))
+    sod, csca, _ = fixtures.build_chain({1: dg1})
+    assert _configure_with_csca(base, monkeypatch, [csca]) == 200
+    holder_pub = crypto.SigningKey.generate().public().raw()
+    status, out = _req(base, "POST", "/verify-identity", {
+        "holder_pub": crypto.b64u_encode(holder_pub),
+        "sod": _b64(sod), "data_groups": {"1": _b64(dg1)},
+    })
+    assert status == 400
+    assert "expired" in str(out).lower()

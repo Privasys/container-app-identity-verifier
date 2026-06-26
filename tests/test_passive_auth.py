@@ -120,3 +120,20 @@ def test_brainpool_explicit_params_dsc_key_verifies():
     with pytest.raises(PAError):
         passive_auth._verify_signature(
             spki, "sha256_ecdsa", "sha256", msg, sig[:-1] + bytes([sig[-1] ^ 0xFF]))
+
+
+def test_dsc_valid_at_signing_time_accepted():
+    import datetime as _dt
+    sod, csca, _ = fixtures.build_chain(
+        {1: b"x"}, signing_time=_dt.datetime(2030, 6, 1, tzinfo=_dt.timezone.utc))
+    pa = passive_auth.verify(sod, [fixtures.cert_der(csca)])
+    assert pa.signing_time_verified is True
+
+
+def test_dsc_invalid_at_signing_time_rejected():
+    import datetime as _dt
+    # Fixture DSC is valid ~2026..2036; a 2040 signing time is past notAfter.
+    sod, csca, _ = fixtures.build_chain(
+        {1: b"x"}, signing_time=_dt.datetime(2040, 6, 1, tzinfo=_dt.timezone.utc))
+    with pytest.raises(passive_auth.PAError):
+        passive_auth.verify(sod, [fixtures.cert_der(csca)])

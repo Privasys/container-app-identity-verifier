@@ -119,8 +119,10 @@ def cert_pem(cert) -> bytes:
     return cert.public_bytes(serialization.Encoding.PEM)
 
 
-def build_chain(dgs: dict[int, bytes]):
-    """Return (sod_der, csca_cert, dsc_cert) for the given data groups."""
+def build_chain(dgs: dict[int, bytes], *, signing_time=None):
+    """Return (sod_der, csca_cert, dsc_cert) for the given data groups. Pass a
+    timezone-aware `signing_time` to add the CMS signingTime signed attribute
+    (used to exercise the DSC/CSCA validity-at-signing-time check)."""
     csca_key = ec.generate_private_key(ec.SECP256R1())
     dsc_key = ec.generate_private_key(ec.SECP256R1())
     csca = _cert(_name("Test CSCA"), _name("Test CSCA"), csca_key, csca_key, ca=True)
@@ -136,11 +138,15 @@ def build_chain(dgs: dict[int, bytes]):
     })
     econtent = lds.dump()
 
-    signed_attrs = cms.CMSAttributes([
+    attrs = [
         cms.CMSAttribute({"type": "content_type", "values": [LDS_SECURITY_OBJECT_OID]}),
         cms.CMSAttribute({"type": "message_digest",
                           "values": [hashlib.sha256(econtent).digest()]}),
-    ])
+    ]
+    if signing_time is not None:
+        attrs.append(cms.CMSAttribute(
+            {"type": "signing_time", "values": [cms.Time({"utc_time": signing_time})]}))
+    signed_attrs = cms.CMSAttributes(attrs)
     signature = dsc_key.sign(signed_attrs.dump(), ec.ECDSA(hashes.SHA256()))
 
     dsc_a = a_x509.Certificate.load(cert_der(dsc))

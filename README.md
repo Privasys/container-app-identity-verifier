@@ -27,10 +27,10 @@ document data cross-reference.
 2. **`POST /verify-identity`** — given the eMRTD data groups (DG1, DG2, DG11,
    EF.SOD), the app:
    - runs **Passive Authentication** (verifies EF.SOD's CMS signature, chains the
-     Document Signer Certificate to a trusted CSCA, and checks every data-group
-     hash);
+     Document Signer Certificate to a trusted CSCA, checks that the DSC + CSCA
+     were valid at the SOD signing time, and checks every data-group hash);
    - extracts the holder fields from the DG1 MRZ (+ DG11 place of birth / personal
-     number);
+     number), and **rejects an expired document**;
    - matches the DG2 portrait against the live capture and scores liveness;
    - cross-references the data-page image (the same enclave OCR) against the chip
      (GPG45 box 3, recorded as a fraud signal at M1C);

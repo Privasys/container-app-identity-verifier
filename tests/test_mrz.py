@@ -66,3 +66,25 @@ def test_access_fields_rejects_unrecoverable():
 def test_access_fields_requires_td3_length():
     with pytest.raises(mrz.MRZError):
         mrz.mrz_access_fields("P<SHORT")
+
+
+def _valid_td3() -> str:
+    """A TD3 MRZ with correctly computed ICAO check digits."""
+    l1 = "P<GBR" + "DOE<<ALICE" + "<" * 29
+    doc, nat, dob, sex, exp, opt = "123456789", "GBR", "000101", "F", "300101", "<" * 14
+    cd = mrz._check_digit
+    l2 = doc + cd(doc) + nat + dob + cd(dob) + sex + exp + cd(exp) + opt + cd(opt)
+    l2 += cd(l2[0:10] + l2[13:20] + l2[21:43])  # composite
+    return l1 + l2
+
+
+def test_parse_dg1_rejects_out_of_range_date():
+    mrz_chars = list(fixtures.SAMPLE_MRZ)
+    mrz_chars[44 + 21:44 + 27] = "301301"  # expiry YYMMDD with month 13
+    with pytest.raises(mrz.MRZError):
+        mrz.parse_dg1(fixtures.build_dg1("".join(mrz_chars)))
+
+
+def test_check_digits_consistent():
+    assert mrz.check_digits_consistent(fixtures.build_dg1()) is False
+    assert mrz.check_digits_consistent(fixtures.build_dg1(_valid_td3())) is True
