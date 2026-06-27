@@ -41,6 +41,11 @@ TOKEN_TTL_SECONDS = int(os.environ.get("IDENTITY_VERIFIER_TOKEN_TTL", "300"))
 # JOSE typ headers.
 IVR_TYP = "application/privasys-ivr+jws"
 DISCLOSURE_TYP = "application/privasys-disclosure+jws"
+AA_CHALLENGE_TYP = "application/privasys-aa-challenge+jws"
+
+# Active Authentication challenge lifetime (seconds). The enclave issues a fresh
+# challenge the chip must sign; it must be redeemed quickly to bound replay.
+AA_CHALLENGE_TTL_SECONDS = int(os.environ.get("IDENTITY_VERIFIER_AA_CHALLENGE_TTL", "120"))
 
 # Dev stub gate — biometrics only. Passive Authentication + MRZ extraction are
 # always real. The face-match + liveness models are fetched at deploy and not

@@ -20,9 +20,10 @@ import http.server
 import json
 import os
 import threading
+import time
 from urllib.parse import urlparse
 
-from verifier import config, crypto, manager, master_list, mrz, receipt, trust_anchors
+from verifier import aa, config, crypto, manager, master_list, mrz, receipt, trust_anchors
 from verifier.verification import VerificationError, authenticate_and_extract, match_biometric
 
 # ── Process state ────────────────────────────────────────────────────────
@@ -107,6 +108,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             if path == "/read-mrz":
                 self._read_mrz(body)
+            elif path == "/aa-challenge":
+                self._aa_challenge()
             elif path == "/verify-identity":
                 self._verify_identity(body)
             elif path == "/prove/age-over":
@@ -183,9 +186,50 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         self._json(200, {**fields, "is_screenshot": ocr.get("is_screenshot")})
 
+    def _aa_challenge(self) -> None:
+        """Issue a fresh Active Authentication challenge the chip must sign. The
+        nonce is wrapped in a short-lived JWS the enclave signs, so freshness is
+        verified statelessly when the chip's signature comes back."""
+        nonce = os.urandom(8)
+        exp = int(time.time()) + config.AA_CHALLENGE_TTL_SECONDS
+        token = crypto.jws_sign(
+            {"n": crypto.b64u_encode(nonce), "exp": exp},
+            _SIGNING_KEY, config.AA_CHALLENGE_TYP)
+        self._json(200, {"challenge": crypto.b64u_encode(nonce), "token": token})
+
+    def _check_active_auth(self, body: dict, dgs: dict) -> bool:
+        """When the chip carries DG15, the holder must prove the chip is genuine
+        via Active Authentication over our fresh challenge. Returns True when
+        verified, False when the chip's AA key type is not yet verifiable (RSA /
+        ISO 9796-2). Raises VerificationError on a missing block or a bad
+        signature (a clone)."""
+        if 15 not in dgs:
+            return False
+        blk = body.get("aa")
+        if not isinstance(blk, dict):
+            raise VerificationError("DG15 present: Active Authentication is required")
+        try:
+            payload = crypto.jws_verify(blk.get("token", ""), _SIGNING_KEY.public())
+        except ValueError as exc:
+            raise VerificationError("invalid Active Authentication challenge token") from exc
+        if int(payload.get("exp", 0)) < int(time.time()):
+            raise VerificationError("Active Authentication challenge expired")
+        challenge_b64 = blk.get("challenge", "")
+        if not challenge_b64 or payload.get("n") != challenge_b64:
+            raise VerificationError("Active Authentication challenge mismatch")
+        try:
+            aa.verify(dgs[15], crypto.b64u_decode(challenge_b64),
+                      _b64u_field(blk, "signature"))
+            return True
+        except aa.AAUnsupported:
+            return False  # recorded as chip_auth=false; not yet enforced
+        except aa.AAError as exc:
+            raise VerificationError(f"Active Authentication failed: {exc}") from exc
+
     def _verify_identity(self, body: dict) -> None:
         holder_pub = _b64u_field(body, "holder_pub")
         doc, dgs = authenticate_and_extract(body)
+        doc.chip_auth = self._check_active_auth(body, dgs)
         bio = match_biometric(body, dgs)
         ivr, salts = receipt.build_ivr(
             _SIGNING_KEY, _MEASUREMENT_PLACEHOLDER, doc, bio, holder_pub

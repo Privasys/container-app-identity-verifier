@@ -32,6 +32,8 @@ document data cross-reference.
    - extracts the holder fields from the DG1 MRZ (+ DG11 place of birth / personal
      number), and **rejects an expired document**;
    - matches the DG2 portrait against the live capture and scores liveness;
+   - when the chip carries DG15, verifies **Active Authentication** (ECDSA) over a
+     fresh `/aa-challenge` nonce, proving the chip is the original and not a clone;
    - cross-references the data-page image (the same enclave OCR) against the chip
      (GPG45 box 3, recorded as a fraud signal at M1C);
    - returns a signed **Identity Verification Receipt (IVR)**: per-field SHA-256
@@ -58,6 +60,7 @@ are cheap, minimal, and never re-expose the whole identity.
 | `GET` | `/.well-known/jwks.json` | signing public key (ES256) |
 | `POST` | `/configure` | load CSCA trust anchors (ICAO master list or PEM); lift the startup freeze |
 | `POST` | `/read-mrz` | → `{ document_number, date_of_birth, date_of_expiry }` (chip access key) |
+| `POST` | `/aa-challenge` | → `{ challenge, token }` — a fresh Active Authentication nonce for the chip to sign |
 | `POST` | `/verify-identity` | → `{ ivr, salts, fields, viz_match }` |
 | `POST` | `/prove/age-over`, `/prove/age-band`, `/prove/field`, `/prove/document-valid` | → `{ token }` |
 | `GET`/`POST` | `/trust-anchors` | read / replace the CSCA master list |
@@ -117,20 +120,24 @@ broken reader can never ship.
 
 ## Status
 
-- **Implemented + tested (30 tests):** the receipt/disclosure crypto (ES256,
+- **Implemented + tested (43 tests):** the receipt/disclosure crypto (ES256,
   commitments, holder binding, all `prove_*` tokens); **Passive Authentication**
-  (EF.SOD CMS + DSC→CSCA chain + per-DG hash integrity); **DG1 MRZ** + DG11 field
-  extraction; **enclave MRZ OCR** (PaddleOCR) with ICAO check-digit recovery of
-  OCR-B look-alikes; the runtime trust-anchor → OID flow (incl. ICAO master-list
-  ingestion); configure-then-freeze; and JWKS.
+  (EF.SOD CMS + DSC→CSCA chain + per-DG hash integrity); **Active Authentication**
+  (ECDSA over a fresh enclave challenge against DG15, anti-clone — required when
+  DG15 is present); document-expiry hard fail + DSC/CSCA validity at signing time;
+  **DG1 MRZ** + DG11 field extraction; **enclave MRZ OCR** (PaddleOCR) with ICAO
+  check-digit recovery of OCR-B look-alikes; the runtime trust-anchor → OID flow
+  (incl. ICAO master-list ingestion); configure-then-freeze; and JWKS.
 - **Wired, model-provisioned:** face match (YuNet + SFace) + liveness — runs when
   the models are present, else a dev stub in CI.
 - **GPG45 M1C:** box 1 (chip Passive Auth) ✓, box 2 (live face ↔ DG2) ✓, box 3
   (visual ↔ chip cross-reference, recorded as a fraud signal — not a hard fail at
   M1C) ✓.
-- **TODO (hardening):** Active/Chip Authentication (anti-clone); ISO 39794-5 DG2
-  decode; active-challenge liveness for an iBeta-certified PAD; binding the signing
-  key to the vault in production.
+- **TODO (hardening):** RSA Active Authentication (ISO 9796-2 message recovery —
+  currently recorded as unverified, never hand-rolled); Chip Authentication (DG14,
+  a DH key agreement folded into secure messaging, which needs full APDU relay);
+  ISO 39794-5 DG2 decode; active-challenge liveness for an iBeta-certified PAD;
+  binding the signing key to the vault in production.
 
 ## Licence
 

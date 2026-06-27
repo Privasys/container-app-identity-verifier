@@ -9,10 +9,12 @@ Orchestrates the real checks:
   - MRZ field extraction from the authenticated DG1 (verifier/mrz.py);
   - face match (DG2 ↔ live capture) + liveness (verifier/biometrics.py).
 
-Active/Chip Authentication (anti-clone) is a documented hardening TODO: RSA AA
-uses ISO 9796-2 and Chip Authentication a DH key agreement — both need a vetted
-eMRTD implementation (per the "don't hand-roll crypto" rule). Passive
-Authentication + biometric holder-binding are the v1 gates.
+Anti-clone (Active/Chip Authentication): ECDSA Active Authentication over a fresh
+enclave challenge is verified against DG15 (see verifier/aa.py, wired in main's
+verify-identity). Still open: RSA AA (ISO 9796-2 message recovery) and Chip
+Authentication (DG14, a DH key agreement folded into secure messaging, which
+needs full APDU relay rather than static data). Passive Authentication +
+biometric holder-binding remain the always-on gates.
 """
 
 from __future__ import annotations
@@ -131,7 +133,7 @@ def authenticate_and_extract(body: dict) -> tuple[DocResult, dict]:
         issuing_state=fields.get("issuing_state", pa.issuing_country),
         doc_expiry=fields.get("doc_expiry", ""),
         passive_auth=True,
-        chip_auth=False,  # AA/CA not yet wired (see module docstring)
+        chip_auth=False,  # set by main._check_active_auth (DG15 Active Auth)
         viz_match=viz_match,
         not_expired=True,  # enforced above; recorded for the receipt
         mrz_valid=mrz_valid,

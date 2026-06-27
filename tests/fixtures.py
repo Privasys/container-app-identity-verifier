@@ -10,6 +10,7 @@ from asn1crypto import cms, x509 as a_x509
 from cryptography import x509 as c_x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from cryptography.x509.oid import NameOID
 
 from verifier import master_list
@@ -113,6 +114,21 @@ def _cert(subject, issuer, subject_key, issuer_key, ca: bool):
 
 def cert_der(cert) -> bytes:
     return cert.public_bytes(serialization.Encoding.DER)
+
+
+def build_dg15(public_key) -> bytes:
+    """DG15 = [APPLICATION 15] (tag 0x6F) wrapping the AA SubjectPublicKeyInfo."""
+    spki = public_key.public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    return b"\x6f" + _ber_len(len(spki)) + spki
+
+
+def aa_sign_ecdsa(priv, challenge: bytes, hash_alg=None) -> bytes:
+    """eMRTD ECDSA Active Authentication signature: plain r‖s over the challenge."""
+    der = priv.sign(challenge, ec.ECDSA(hash_alg or hashes.SHA256()))
+    r, s = decode_dss_signature(der)
+    size = (priv.curve.key_size + 7) // 8
+    return r.to_bytes(size, "big") + s.to_bytes(size, "big")
 
 
 def cert_pem(cert) -> bytes:

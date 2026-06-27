@@ -13,6 +13,7 @@ import urllib.request
 from http.server import HTTPServer
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
 
 import fixtures
 import main
@@ -128,3 +129,64 @@ def test_verify_identity_rejects_expired_document(server, monkeypatch):
     })
     assert status == 400
     assert "expired" in str(out).lower()
+
+
+def _aa_dg15():
+    aa_key = ec.generate_private_key(ec.SECP256R1())
+    return aa_key, fixtures.build_dg15(aa_key.public_key())
+
+
+def test_verify_identity_active_auth_accepts_genuine_chip(server, monkeypatch):
+    base = server
+    dg1 = fixtures.build_dg1()
+    aa_key, dg15 = _aa_dg15()
+    sod, csca, _ = fixtures.build_chain({1: dg1, 15: dg15})
+    assert _configure_with_csca(base, monkeypatch, [csca]) == 200
+    st, ch = _req(base, "POST", "/aa-challenge")
+    assert st == 200
+    sig = fixtures.aa_sign_ecdsa(aa_key, crypto.b64u_decode(ch["challenge"]))
+    holder = crypto.SigningKey.generate()
+    st, vi = _req(base, "POST", "/verify-identity", {
+        "holder_pub": crypto.b64u_encode(holder.public().raw()),
+        "sod": _b64(sod), "data_groups": {"1": _b64(dg1), "15": _b64(dg15)},
+        "aa": {"challenge": ch["challenge"], "token": ch["token"],
+               "signature": crypto.b64u_encode(sig)},
+    })
+    assert st == 200, vi
+    payload = receipt.verify_ivr(vi["ivr"], main._SIGNING_KEY.public())
+    assert payload["doc"]["chip_auth"] is True
+
+
+def test_verify_identity_rejects_cloned_chip(server, monkeypatch):
+    base = server
+    dg1 = fixtures.build_dg1()
+    _aa_key, dg15 = _aa_dg15()
+    sod, csca, _ = fixtures.build_chain({1: dg1, 15: dg15})
+    assert _configure_with_csca(base, monkeypatch, [csca]) == 200
+    st, ch = _req(base, "POST", "/aa-challenge")
+    bad = fixtures.aa_sign_ecdsa(ec.generate_private_key(ec.SECP256R1()),
+                                 crypto.b64u_decode(ch["challenge"]))
+    holder = crypto.SigningKey.generate()
+    st, out = _req(base, "POST", "/verify-identity", {
+        "holder_pub": crypto.b64u_encode(holder.public().raw()),
+        "sod": _b64(sod), "data_groups": {"1": _b64(dg1), "15": _b64(dg15)},
+        "aa": {"challenge": ch["challenge"], "token": ch["token"],
+               "signature": crypto.b64u_encode(bad)},
+    })
+    assert st == 400
+    assert "active authentication" in str(out).lower()
+
+
+def test_verify_identity_requires_aa_when_dg15_present(server, monkeypatch):
+    base = server
+    dg1 = fixtures.build_dg1()
+    _aa_key, dg15 = _aa_dg15()
+    sod, csca, _ = fixtures.build_chain({1: dg1, 15: dg15})
+    assert _configure_with_csca(base, monkeypatch, [csca]) == 200
+    holder = crypto.SigningKey.generate()
+    st, out = _req(base, "POST", "/verify-identity", {  # no "aa" block
+        "holder_pub": crypto.b64u_encode(holder.public().raw()),
+        "sod": _b64(sod), "data_groups": {"1": _b64(dg1), "15": _b64(dg15)},
+    })
+    assert st == 400
+    assert "active authentication" in str(out).lower()
