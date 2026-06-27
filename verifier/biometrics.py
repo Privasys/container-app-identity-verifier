@@ -198,12 +198,30 @@ def _liveness(image_bytes: bytes) -> float:
     _, faces = detector.detect(img)
     if faces is None or len(faces) == 0:
         raise BiometricError("no face found for liveness")
-    x, y, fw, fh = (int(v) for v in faces[0][:4])
-    crop = img[max(0, y):y + fh, max(0, x):x + fw]
-    blob = cv2.dnn.blobFromImage(crop, scalefactor=1.0, size=(80, 80), swapRB=True)
+    largest = max(faces, key=lambda f: float(f[2]) * float(f[3]))
+    # MiniFASNet expects the minivision preprocessing, empirically validated
+    # against labelled live/print/replay samples (see tools/validate_pad.py):
+    # a 2.7x-scale crop around the bbox centre, raw BGR [0,255] (the model bakes
+    # in its own normalisation — feeding /255 saturates every class), 80x80.
+    crop = _scale_crop(img, largest, 2.7)
+    blob = cv2.dnn.blobFromImage(crop, scalefactor=1.0, size=(80, 80), swapRB=False)
     _liveness_net.setInput(blob)
     out = _liveness_net.forward().flatten()
     e = np.exp(out - np.max(out))
     probs = e / e.sum()
-    # Silent-Face label 1 = live (0 = print/2D, 2 = replay/3D).
+    # Validated label convention: index 1 = live (0 = print/2D, 2 = replay/3D).
     return float(probs[1]) if probs.shape[0] >= 2 else float(out[0])
+
+
+def _scale_crop(img, box, scale: float):
+    """Crop a `scale`x-enlarged square-ish region around the face bbox centre
+    (minivision MiniFASNet preprocessing), clamped to the image. PAD models are
+    trained on this context margin, not a tight face crop."""
+    x, y, bw, bh = (float(v) for v in box[:4])
+    sh, sw = img.shape[:2]
+    s = min((sh - 1) / bh, (sw - 1) / bw, scale)
+    nw, nh = bw * s, bh * s
+    cx, cy = x + bw / 2, y + bh / 2
+    lx, ly = int(max(0, cx - nw / 2)), int(max(0, cy - nh / 2))
+    rx, ry = int(min(sw, cx + nw / 2)), int(min(sh, cy + nh / 2))
+    return img[ly:ry, lx:rx]

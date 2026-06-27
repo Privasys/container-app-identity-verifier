@@ -44,18 +44,22 @@ RUN python -c "import numpy as np; from paddleocr import PaddleOCR; \
 # Biometric models — fetched and SHA-256-pinned (not vendored). A changed
 # upstream file fails the checksum and the build, so the measured image stays
 # reproducible. YuNet = face detect+landmarks (MIT); SFace = recognise/embed
-# (Apache-2.0); both from OpenCV Zoo. MiniFASNet (liveness/PAD) is NOT baked here
-# yet: verifier/biometrics.py now FAILS CLOSED without it (a verifier that cannot
-# assess liveness denies, it does not silently pass), so a *validated*
-# minifasnet.onnx must be provisioned before the enclave will issue receipts.
-# Validate the label convention (live vs print/replay) against labelled samples
-# before pinning — a wrong convention would invert PAD and pass every spoof.
+# (Apache-2.0); both from OpenCV Zoo. MiniFASNetV2 (liveness/PAD, minivision /
+# Silent-Face, Apache-2.0) is baked too: biometrics.py FAILS CLOSED without it
+# (a verifier that cannot assess liveness denies, it does not silently pass). The
+# preprocessing + live-label index were validated empirically against labelled
+# live/print/replay samples (tools/validate_pad.py) — the upstream model card's
+# claimed normalisation/label were WRONG, so do not trust it; re-run the
+# validator if this pin changes. NOTE: this is a baseline single-frame PAD, not
+# an iBeta-certified or FAR/FRR-calibrated one.
 ENV IDENTITY_VERIFIER_MODEL_DIR=/models
 RUN mkdir -p /models && cd /models \
     && curl -fsSL -o yunet.onnx "https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx" \
     && echo "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4  yunet.onnx" | sha256sum -c - \
     && curl -fsSL -o sface.onnx "https://huggingface.co/opencv/face_recognition_sface/resolve/main/face_recognition_sface_2021dec.onnx" \
-    && echo "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79  sface.onnx" | sha256sum -c -
+    && echo "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79  sface.onnx" | sha256sum -c - \
+    && curl -fsSL -o minifasnet.onnx "https://huggingface.co/garciafido/minifasnet-v2-anti-spoofing-onnx/resolve/main/minifasnet_v2.onnx" \
+    && echo "d7b3cd9ba8a7ceb13baa8c4720902e27ca3112eff52f926c08804af6b6eecc7b  minifasnet.onnx" | sha256sum -c -
 
 COPY main.py .
 COPY verifier/ verifier/

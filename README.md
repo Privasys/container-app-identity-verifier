@@ -133,10 +133,14 @@ broken reader can never ship.
   (incl. ICAO master-list ingestion); configure-then-freeze; and JWKS.
 - **Fail closed by default:** `verify-identity` refuses to issue an IVR when the
   live face does not match the document portrait, and when liveness cannot be
-  assessed (no PAD model) — it never silently passes. Face match (YuNet + SFace)
-  runs from the baked models; **liveness requires a validated `minifasnet.onnx`
-  to be provisioned** (the enclave denies until then). The pass-through stub is
-  test-only and cannot be enabled on a deployed enclave.
+  assessed — it never silently passes. Face match (YuNet + SFace) and liveness
+  (MiniFASNetV2 PAD) run from the baked models; the PAD preprocessing + live
+  index were validated empirically against labelled samples (`tools/validate_pad.py`)
+  rather than trusting the upstream model card (which was wrong). The PAD is a
+  **baseline single-frame model, not iBeta-certified or FAR/FRR-calibrated** — a
+  printed photo is rejected, but a determined relayed-video attack is not the bar
+  yet (see TODO: active-challenge liveness). The pass-through stub is test-only
+  and cannot be enabled on a deployed enclave.
 - **GPG45 M1C:** box 1 (chip Passive Auth) ✓, box 2 (live face ↔ DG2) ✓, box 3
   (visual ↔ chip cross-reference, recorded as a fraud signal — not a hard fail at
   M1C) ✓.
