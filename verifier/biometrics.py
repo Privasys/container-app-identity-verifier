@@ -168,19 +168,29 @@ def match(dg2_bytes: bytes, live_image_bytes: bytes) -> BioResult:
 
 def _liveness(image_bytes: bytes) -> float:
     """MiniFASNet passive liveness on the live capture. Returns a 0..1 live
-    probability. If no liveness model is provisioned the check is skipped
-    (returns 1.0) — drop minifasnet.onnx into the model dir to enforce PAD."""
+    probability.
+
+    Fails CLOSED: if no PAD model is provisioned the enclave must not assert that
+    the capture is live — it raises (so verify-identity denies) rather than
+    silently returning 1.0. Provision a *validated* minifasnet.onnx in the model
+    dir to enforce real PAD. (The test-only stub skips this for CI.)"""
     global _liveness_net, _liveness_loaded
-    import cv2
-    import numpy as np
     if not _liveness_loaded:
         path = _model_path(_MINIFASNET)
-        _liveness_net = cv2.dnn.readNetFromONNX(path) if os.path.isfile(path) else None
+        if os.path.isfile(path):
+            import cv2
+            _liveness_net = cv2.dnn.readNetFromONNX(path)
+        else:
+            _liveness_net = None
         _liveness_loaded = True
-        if _liveness_net is None:
-            print("[biometrics] liveness model absent — PAD skipped (face match only)")
     if _liveness_net is None:
-        return 1.0
+        if _ALLOW_TEST_STUB:
+            return 1.0
+        raise BiometricError(
+            "liveness (PAD) model not provisioned — refusing to assert a live "
+            "capture (fail closed); provision a validated minifasnet.onnx")
+    import cv2
+    import numpy as np
     img = _decode(image_bytes)
     detector, _ = _engines()
     h, w = img.shape[:2]

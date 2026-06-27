@@ -27,6 +27,18 @@ def test_liveness_threshold():
     assert not biometrics.is_live(0.5)
 
 
+def test_liveness_fails_closed_without_pad_model(monkeypatch):
+    # No PAD model + stub off (production default) → the enclave must NOT silently
+    # assert "live" (the old return 1.0); it denies. This stops a replayed photo
+    # of the genuine holder passing unchecked.
+    monkeypatch.setattr(biometrics, "_ALLOW_TEST_STUB", False)
+    monkeypatch.setattr(biometrics, "_liveness_loaded", False)
+    monkeypatch.setattr(biometrics, "_liveness_net", None)
+    monkeypatch.setattr(biometrics, "_model_path", lambda n: "/nonexistent/" + n)
+    with pytest.raises(BiometricError):
+        biometrics._liveness(b"whatever")
+
+
 def test_match_fails_closed_without_models(monkeypatch):
     # No models + stub off (the production default) → must fail closed, never
     # silently pass. This is what stops a deployed enclave accepting any face.

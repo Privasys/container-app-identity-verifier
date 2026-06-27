@@ -131,8 +131,12 @@ broken reader can never ship.
   **DG1 MRZ** + DG11 field extraction; **enclave MRZ OCR** (PaddleOCR) with ICAO
   check-digit recovery of OCR-B look-alikes; the runtime trust-anchor → OID flow
   (incl. ICAO master-list ingestion); configure-then-freeze; and JWKS.
-- **Wired, model-provisioned:** face match (YuNet + SFace) + liveness — runs when
-  the models are present, else a dev stub in CI.
+- **Fail closed by default:** `verify-identity` refuses to issue an IVR when the
+  live face does not match the document portrait, and when liveness cannot be
+  assessed (no PAD model) — it never silently passes. Face match (YuNet + SFace)
+  runs from the baked models; **liveness requires a validated `minifasnet.onnx`
+  to be provisioned** (the enclave denies until then). The pass-through stub is
+  test-only and cannot be enabled on a deployed enclave.
 - **GPG45 M1C:** box 1 (chip Passive Auth) ✓, box 2 (live face ↔ DG2) ✓, box 3
   (visual ↔ chip cross-reference, recorded as a fraud signal — not a hard fail at
   M1C) ✓.

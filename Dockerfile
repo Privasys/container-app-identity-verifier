@@ -44,8 +44,12 @@ RUN python -c "import numpy as np; from paddleocr import PaddleOCR; \
 # Biometric models — fetched and SHA-256-pinned (not vendored). A changed
 # upstream file fails the checksum and the build, so the measured image stays
 # reproducible. YuNet = face detect+landmarks (MIT); SFace = recognise/embed
-# (Apache-2.0); both from OpenCV Zoo. MiniFASNet (liveness/PAD) is added later;
-# verifier/biometrics.py enforces liveness only when minifasnet.onnx is present.
+# (Apache-2.0); both from OpenCV Zoo. MiniFASNet (liveness/PAD) is NOT baked here
+# yet: verifier/biometrics.py now FAILS CLOSED without it (a verifier that cannot
+# assess liveness denies, it does not silently pass), so a *validated*
+# minifasnet.onnx must be provisioned before the enclave will issue receipts.
+# Validate the label convention (live vs print/replay) against labelled samples
+# before pinning — a wrong convention would invert PAD and pass every spoof.
 ENV IDENTITY_VERIFIER_MODEL_DIR=/models
 RUN mkdir -p /models && cd /models \
     && curl -fsSL -o yunet.onnx "https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx" \
