@@ -7,8 +7,8 @@ The matching MATH (embedding cosine distance, thresholds) is implemented and
 tested here. The model INFERENCE (decode DG2 portrait + live capture, embed with
 FaceNet ONNX, score liveness with MiniFASNetV2) is wired but requires the model
 artifacts, which are fetched at build/deploy (not vendored) — so `match()` runs
-the real path when models + onnxruntime are present, and otherwise either uses a
-dev stub (IDENTITY_VERIFIER_DEV_STUB=1) or fails closed.
+the real path when models + onnxruntime are present, and otherwise fails closed
+(the test-only stub is a module flag, never enableable on a deployed enclave).
 
 Models / licences (kyc-enclave-design.md §7.3):
   Face embedding : FaceNet ONNX (MIT)
@@ -22,7 +22,13 @@ import math
 import os
 from dataclasses import dataclass
 
-from . import config
+# Test-only escape hatch. When True, match() returns a passing stub if the face
+# models are absent, so the receipt/HTTP plumbing can be exercised in CI without
+# the model artifacts. It is a MODULE flag set only by tests — deliberately NOT
+# an env var or config option, so a deployed enclave can never enable it and
+# always fails closed without models. A KYC verifier must never assert a face
+# match it did not actually compute.
+_ALLOW_TEST_STUB = False
 
 # Cosine-distance threshold for a face match (1 - cosine similarity). Default is
 # SFace's published operating point (cosine similarity >= 0.363 ⇔ distance
@@ -142,11 +148,11 @@ def match(dg2_bytes: bytes, live_image_bytes: bytes) -> BioResult:
     """Compare the DG2 portrait to the live capture and score liveness.
 
     Real path requires the face models in IDENTITY_VERIFIER_MODEL_DIR. Without
-    them: dev stub if IDENTITY_VERIFIER_DEV_STUB=1, else fail closed. Liveness
-    (PAD) is enforced only when its model is present.
+    them it fails closed (a deployed enclave can never stub — _ALLOW_TEST_STUB is
+    test-only). Liveness (PAD) is enforced only when its model is present.
     """
     if not _models_available():
-        if config.ALLOW_DEV_STUB:
+        if _ALLOW_TEST_STUB:
             return BioResult(face_match=True, liveness_score=0.99)
         raise BiometricError(
             "face models not provisioned (IDENTITY_VERIFIER_MODEL_DIR) — "

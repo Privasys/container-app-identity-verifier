@@ -249,6 +249,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         doc, dgs = authenticate_and_extract(body)
         doc.chip_auth = self._check_active_auth(body, dgs)
         bio = match_biometric(body, dgs)
+        # Hard gate: the live capture must match the document portrait (and pass
+        # liveness when a PAD model is provisioned — both folded into face_match).
+        # Without this the enclave would issue an IVR for a genuine document
+        # presented with someone else's face: the relying-party gate (verify_ivr)
+        # rejects such an IVR, but the wallet's own "verify my ID" step treats any
+        # 200 as success, so the mismatch must fail here, at issuance.
+        if not bio.face_match:
+            raise VerificationError("the live face does not match the document portrait")
         ivr, salts = receipt.build_ivr(
             _SIGNING_KEY, _MEASUREMENT_PLACEHOLDER, doc, bio, holder_pub
         )

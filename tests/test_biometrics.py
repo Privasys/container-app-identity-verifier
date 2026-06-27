@@ -3,7 +3,7 @@
 
 import pytest
 
-from verifier import biometrics, config
+from verifier import biometrics
 from verifier.biometrics import BiometricError
 
 
@@ -28,15 +28,18 @@ def test_liveness_threshold():
 
 
 def test_match_fails_closed_without_models(monkeypatch):
-    # No models + no dev stub → must fail closed (never silently pass).
-    monkeypatch.setattr(config, "ALLOW_DEV_STUB", False)
+    # No models + stub off (the production default) → must fail closed, never
+    # silently pass. This is what stops a deployed enclave accepting any face.
+    monkeypatch.setattr(biometrics, "_ALLOW_TEST_STUB", False)
     monkeypatch.setattr(biometrics, "_models_available", lambda: False)
     with pytest.raises(BiometricError):
         biometrics.match(b"dg2", b"live")
 
 
-def test_match_dev_stub(monkeypatch):
-    monkeypatch.setattr(config, "ALLOW_DEV_STUB", True)
+def test_match_test_stub(monkeypatch):
+    # The stub is test-only (a module flag, not env/config) so CI can exercise
+    # the plumbing without model artifacts.
+    monkeypatch.setattr(biometrics, "_ALLOW_TEST_STUB", True)
     monkeypatch.setattr(biometrics, "_models_available", lambda: False)
     res = biometrics.match(b"dg2", b"live")
     assert res.face_match is True and res.liveness_score > 0.9

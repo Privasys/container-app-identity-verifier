@@ -34,8 +34,10 @@ def _configure_with_csca(base, monkeypatch, cscas):
 
 @pytest.fixture()
 def server(monkeypatch, tmp_path):
-    # Real Passive Auth + MRZ; biometric uses the dev stub (no ONNX models here).
-    monkeypatch.setattr(config, "ALLOW_DEV_STUB", True)
+    # Real Passive Auth + MRZ; biometric uses the test-only stub (no ONNX models
+    # here). The stub is a module flag, never an env/config option (so it can
+    # never be enabled on a deployed enclave).
+    monkeypatch.setattr(biometrics, "_ALLOW_TEST_STUB", True)
     monkeypatch.setattr(biometrics, "_models_available", lambda: False)
     monkeypatch.setenv("IDENTITY_VERIFIER_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(main, "_CONFIGURED", False)
@@ -114,6 +116,26 @@ def test_verify_identity_rejects_untrusted_document(server, monkeypatch):
         "sod": _b64(sod_b), "data_groups": {"1": _b64(dg1)},
     })
     assert status == 400  # passive authentication fails (untrusted CSCA)
+
+
+def test_verify_identity_rejects_face_mismatch(server, monkeypatch):
+    # A genuine document presented with someone else's face: the biometric is
+    # computed and does NOT match → the enclave must refuse to issue an IVR,
+    # not return 200 with face_match=false recorded (which the wallet would
+    # treat as a successful verification).
+    base = server
+    dg1 = fixtures.build_dg1()
+    sod, csca, _ = fixtures.build_chain({1: dg1})
+    assert _configure_with_csca(base, monkeypatch, [csca]) == 200
+    monkeypatch.setattr(main, "match_biometric",
+                        lambda body, dgs: biometrics.BioResult(face_match=False, liveness_score=1.0))
+    holder_pub = crypto.SigningKey.generate().public().raw()
+    status, out = _req(base, "POST", "/verify-identity", {
+        "holder_pub": crypto.b64u_encode(holder_pub),
+        "sod": _b64(sod), "data_groups": {"1": _b64(dg1)},
+    })
+    assert status == 400
+    assert "face" in str(out).lower()
 
 
 def test_verify_identity_rejects_expired_document(server, monkeypatch):

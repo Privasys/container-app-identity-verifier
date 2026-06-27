@@ -47,9 +47,7 @@ AA_CHALLENGE_TYP = "application/privasys-aa-challenge+jws"
 # challenge the chip must sign; it must be redeemed quickly to bound replay.
 AA_CHALLENGE_TTL_SECONDS = int(os.environ.get("IDENTITY_VERIFIER_AA_CHALLENGE_TTL", "120"))
 
-# Dev stub gate — biometrics only. Passive Authentication + MRZ extraction are
-# always real. The face-match + liveness models are fetched at deploy and not
-# vendored, so when this is "1" and no models are present the biometric step is
-# treated as passing, letting the document-auth + receipt + disclosure flow run
-# end-to-end in dev/CI. It MUST be unset/false in production.
-ALLOW_DEV_STUB = os.environ.get("IDENTITY_VERIFIER_DEV_STUB", "") == "1"
+# NOTE: there is deliberately no env-controlled biometric dev-stub here. A
+# deployed verifier must fail closed when the face models are absent — it must
+# never assert a face match it did not compute. The test-only stub lives as a
+# module flag in verifier/biometrics.py (_ALLOW_TEST_STUB), unreachable in prod.
