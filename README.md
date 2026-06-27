@@ -33,7 +33,10 @@ document data cross-reference.
      number), and **rejects an expired document**;
    - matches the DG2 portrait against the live capture and scores liveness;
    - when the chip carries DG15, verifies **Active Authentication** (ECDSA) over a
-     fresh `/aa-challenge` nonce, proving the chip is the original and not a clone;
+     fresh per-read challenge — either an enclave-issued `/aa-challenge` nonce
+     (clients that drive the chip APDUs) or the reader's own random challenge
+     relayed with the signature (iOS NFCPassportReader) — proving the chip is the
+     original and not a clone;
    - cross-references the data-page image (the same enclave OCR) against the chip
      (GPG45 box 3, recorded as a fraud signal at M1C);
    - returns a signed **Identity Verification Receipt (IVR)**: per-field SHA-256

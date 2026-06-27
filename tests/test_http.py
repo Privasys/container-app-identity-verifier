@@ -6,6 +6,7 @@
 import base64
 import hashlib
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -151,6 +152,28 @@ def test_verify_identity_active_auth_accepts_genuine_chip(server, monkeypatch):
         "sod": _b64(sod), "data_groups": {"1": _b64(dg1), "15": _b64(dg15)},
         "aa": {"challenge": ch["challenge"], "token": ch["token"],
                "signature": crypto.b64u_encode(sig)},
+    })
+    assert st == 200, vi
+    payload = receipt.verify_ivr(vi["ivr"], main._SIGNING_KEY.public())
+    assert payload["doc"]["chip_auth"] is True
+
+
+def test_verify_identity_accepts_chip_read_challenge_without_token(server, monkeypatch):
+    # iOS path: the NFC reader owns the session and issues its own random per-read
+    # challenge, so the wallet relays {challenge, signature} with no enclave token.
+    base = server
+    dg1 = fixtures.build_dg1()
+    aa_key, dg15 = _aa_dg15()
+    sod, csca, _ = fixtures.build_chain({1: dg1, 15: dg15})
+    assert _configure_with_csca(base, monkeypatch, [csca]) == 200
+    challenge = os.urandom(8)
+    sig = fixtures.aa_sign_ecdsa(aa_key, challenge)
+    holder = crypto.SigningKey.generate()
+    st, vi = _req(base, "POST", "/verify-identity", {
+        "holder_pub": crypto.b64u_encode(holder.public().raw()),
+        "sod": _b64(sod), "data_groups": {"1": _b64(dg1), "15": _b64(dg15)},
+        "aa": {"challenge": crypto.b64u_encode(challenge),
+               "signature": crypto.b64u_encode(sig)},  # no token
     })
     assert st == 200, vi
     payload = receipt.verify_ivr(vi["ivr"], main._SIGNING_KEY.public())

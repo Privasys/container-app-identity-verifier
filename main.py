@@ -199,24 +199,42 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _check_active_auth(self, body: dict, dgs: dict) -> bool:
         """When the chip carries DG15, the holder must prove the chip is genuine
-        via Active Authentication over our fresh challenge. Returns True when
-        verified, False when the chip's AA key type is not yet verifiable (RSA /
-        ISO 9796-2). Raises VerificationError on a missing block or a bad
-        signature (a clone)."""
+        via Active Authentication: the chip signs a fresh per-read challenge with
+        the non-extractable AA private key whose public half is in DG15. A clone
+        lacks that key and cannot produce a valid signature over any challenge.
+
+        Two challenge sources are accepted:
+          - **enclave-issued** (`aa.token` present) — the challenge came from
+            /aa-challenge and is bound in a short-lived JWS we signed, so we
+            verify its freshness ourselves. Used by clients that drive the chip
+            APDUs directly (e.g. the CLI).
+          - **chip-read** (no `token`) — the reader owns the NFC session and
+            issues its own random per-read challenge (e.g. NFCPassportReader on
+            iOS), relaying the challenge it used plus the chip's signature. We
+            can't attest that challenge's freshness, but it is fresh-random per
+            read and the anti-clone property holds regardless.
+
+        Returns True when the signature verifies, False when the AA key type is
+        not yet verifiable (RSA / ISO 9796-2). Raises VerificationError on a
+        missing block or a bad signature (a clone)."""
         if 15 not in dgs:
             return False
         blk = body.get("aa")
         if not isinstance(blk, dict):
             raise VerificationError("DG15 present: Active Authentication is required")
-        try:
-            payload = crypto.jws_verify(blk.get("token", ""), _SIGNING_KEY.public())
-        except ValueError as exc:
-            raise VerificationError("invalid Active Authentication challenge token") from exc
-        if int(payload.get("exp", 0)) < int(time.time()):
-            raise VerificationError("Active Authentication challenge expired")
         challenge_b64 = blk.get("challenge", "")
-        if not challenge_b64 or payload.get("n") != challenge_b64:
-            raise VerificationError("Active Authentication challenge mismatch")
+        if not challenge_b64:
+            raise VerificationError("Active Authentication challenge is required")
+        token = blk.get("token")
+        if token:
+            try:
+                payload = crypto.jws_verify(token, _SIGNING_KEY.public())
+            except ValueError as exc:
+                raise VerificationError("invalid Active Authentication challenge token") from exc
+            if int(payload.get("exp", 0)) < int(time.time()):
+                raise VerificationError("Active Authentication challenge expired")
+            if payload.get("n") != challenge_b64:
+                raise VerificationError("Active Authentication challenge mismatch")
         try:
             aa.verify(dgs[15], crypto.b64u_decode(challenge_b64),
                       _b64u_field(blk, "signature"))
