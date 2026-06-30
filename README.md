@@ -5,7 +5,7 @@ travel document (passport / national ID) and a live face capture, and issues
 short-lived, signed claims about the holder — **age over N, age band, or a single
 certified field** — without retaining the raw document or biometric.
 
-It is a plain Docker container (HTTP on `$PORT`, `8080` fallback) meant to run
+It is a plain Docker container (HTTP on `$PORT`, which is required) meant to run
 inside a Trusted Execution Environment with RA-TLS terminated in front; it is
 **not tied to a specific TEE** (it deploys on Privasys enclave-os-virtual, but the
 image is TEE-agnostic). A relying party trusts a claim by verifying the app's
@@ -113,7 +113,7 @@ is ephemeral.
 ```sh
 pip install -r requirements.txt pytest
 python -m pytest -q
-python main.py                      # serves on $PORT (8080 fallback)
+PORT=8000 python main.py            # serves on $PORT (required)
 ```
 
 Push a `v*` tag → CI builds `ghcr.io/privasys/container-app-identity-verifier`

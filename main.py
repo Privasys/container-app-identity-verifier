@@ -8,7 +8,7 @@ Verification Receipt (IVR) of per-field commitments; cheap `prove_*` derivations
 return consented, audience-bound, government-certified disclosure tokens. Raw data
 stays with the client. See .operations/identity-platform/kyc-enclave-design.md.
 
-HTTP on $PORT (platform-allocated; 8080 fallback) with RA-TLS terminated in front.
+HTTP on $PORT (platform-allocated; required, no fallback) with RA-TLS terminated in front.
 Configure-then-freeze: the app boots frozen (503) until POST /configure
 provisions the CSCA trust anchors.
 """
@@ -336,8 +336,11 @@ if __name__ == "__main__":
 
     # The platform allocates a unique host port per app and passes it as $PORT
     # (host networking -> listen port == host port; see management-service
-    # migration 034 / bug #43). Fall back to 8080 for local runs.
-    port = int(os.environ.get("PORT", "8080"))
+    # migration 034 / bug #43). $PORT is required — no hard-coded fallback.
+    _port = os.environ.get("PORT")
+    if not _port:
+        raise SystemExit("PORT environment variable is required")
+    port = int(_port)
     server = http.server.HTTPServer(("0.0.0.0", port), Handler)
     print(f"identity-verifier listening on :{port} (kid={_SIGNING_KEY.kid}, configured={_CONFIGURED})")
     server.serve_forever()
