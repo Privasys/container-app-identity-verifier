@@ -1,7 +1,7 @@
 {
     "app_name": "container-app-identity-verifier",
     "store_tagline": "Passport and ID verification in a confidential enclave. Prove your age or one field, never the document.",
-    "store_category": "Security & Privacy",
+    "store_category": "Identity & KYC",
     "store_keywords": "identity verification, KYC, passport, ID, eMRTD, NFC, age verification, age over 18, age check, ICAO 9303, GPG45, selective disclosure, confidential computing, attestation, biometric, liveness, eIDAS",
     "store_website_url": "https://privasys.org",
     "store_privacy_url": "https://privasys.org/legal/privacy/",
