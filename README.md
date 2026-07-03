@@ -80,7 +80,7 @@ List (`{"master_list_cms": "<base64 .ml>"}`, whose CMS signature + signer chain
 the app validates before extracting the CSCAs) or a ready PEM bundle
 (`{"trust_anchors_pem": "<PEM>"}`). It is persisted on the per-app encrypted
 volume. The SHA-256 of the active set is published as an attestation extension
-(OID `1.3.6.1.4.1.65230.2.8`), so a relying party can pin which trust anchors were
+(OID `1.3.6.1.4.1.65230.3.5.1`, the app-custom per-workload arc), so a relying party can pin which trust anchors were
 in force from the RA-TLS certificate. Updating the list changes that OID; no image
 rebuild.
 
