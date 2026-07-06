@@ -9,7 +9,15 @@ import os
 
 # Bumped per release so the deployed measurement (image digest at OID 3.2)
 # changes and versions are distinguishable via GET /version.
-APP_VERSION = "0.3.13"
+APP_VERSION = "0.4.0"
+
+# The verifier's own measurement, stamped into every IVR so a relying party can
+# tell which audited verifier code produced a receipt. PRIVASYS_IMAGE_DIGEST is
+# the hex SHA-256 of the pinned container image, injected by the enclave-os
+# launcher at load — the same value the platform attests at OID 3.2, so the IVR
+# claim is cross-checkable against the RA-TLS leaf. "unbound" only outside the
+# platform (local dev/tests).
+MEASUREMENT = os.environ.get("PRIVASYS_IMAGE_DIGEST", "unbound")
 
 # Custom attestation OID carrying the SHA-256 of the active CSCA / ICAO master
 # list (the trust anchors used for Passive Authentication). Set at runtime via
@@ -45,10 +53,30 @@ IVR_TTL_SECONDS = int(os.environ.get("IDENTITY_VERIFIER_IVR_TTL", str(180 * 24 *
 # Disclosure token lifetime (seconds) — short-lived, single-audience.
 TOKEN_TTL_SECONDS = int(os.environ.get("IDENTITY_VERIFIER_TOKEN_TTL", "300"))
 
-# JOSE typ headers.
+# JOSE typ headers. Disclosure tokens are SD-JWT VCs (draft-ietf-oauth-sd-jwt-vc)
+# so relying parties can use off-the-shelf SD-JWT tooling; the IVR and the AA
+# challenge stay private, verifier-internal JWS formats.
 IVR_TYP = "application/privasys-ivr+jws"
-DISCLOSURE_TYP = "application/privasys-disclosure+jws"
+DISCLOSURE_TYP = "dc+sd-jwt"
 AA_CHALLENGE_TYP = "application/privasys-aa-challenge+jws"
+
+# SD-JWT VC type (vct) of every disclosure token. The concrete claim is carried
+# in the token's `claim`/`value` pair, so one vct covers the whole family.
+DISCLOSURE_VCT = "https://privasys.org/vct/identity-disclosure"
+
+
+def issuer(host: str | None) -> str:
+    """The disclosure-token `iss`. SD-JWT VC resolves the issuer's keys at
+    https://<iss>/.well-known/jwt-vc-issuer, so this must be the verifier's own
+    public origin: IDENTITY_VERIFIER_ISSUER when set, else derived from the
+    request Host header (Caddy passes the app's public host). The URN fallback
+    (no platform, no Host) is deliberately non-resolvable."""
+    env = os.environ.get("IDENTITY_VERIFIER_ISSUER", "")
+    if env:
+        return env
+    if host:
+        return "https://" + host.split(",")[0].strip()
+    return "urn:privasys:identity-verifier"
 
 # Active Authentication challenge lifetime (seconds). The enclave issues a fresh
 # challenge the chip must sign; it must be redeemed quickly to bound replay.

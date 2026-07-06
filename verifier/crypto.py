@@ -157,17 +157,18 @@ class PublicKey:
         except (InvalidSignature, ValueError):
             return False
 
-    def jwk(self, kid: str) -> dict:
+    def jwk_public(self) -> dict:
+        """Minimal EC JWK (kty/crv/x/y) — e.g. a disclosure token's cnf.jwk."""
         nums = self._pub.public_numbers()
         return {
             "kty": "EC",
             "crv": "P-256",
             "x": b64u_encode(nums.x.to_bytes(_COORD_BYTES, "big")),
             "y": b64u_encode(nums.y.to_bytes(_COORD_BYTES, "big")),
-            "use": "sig",
-            "alg": "ES256",
-            "kid": kid,
         }
+
+    def jwk(self, kid: str) -> dict:
+        return {**self.jwk_public(), "use": "sig", "alg": "ES256", "kid": kid}
 
     def raw(self) -> bytes:
         """Uncompressed SEC1 point (0x04 ‖ X ‖ Y)."""

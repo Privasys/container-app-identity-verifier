@@ -67,6 +67,10 @@ def test_end_to_end(server, monkeypatch):
 
     assert _req(base, "GET", "/health")[0] == 200
 
+    # The IVR must carry the verifier's measurement (the launcher-injected
+    # image digest in production; monkeypatched here).
+    monkeypatch.setattr(config, "MEASUREMENT", "test-image-digest")
+
     # Build a real SOD + DG1 chain and configure its CSCA via a (synthetic,
     # pinned) ICAO master list.
     dg1 = fixtures.build_dg1()
@@ -88,6 +92,7 @@ def test_end_to_end(server, monkeypatch):
 
     # prove age-over with a holder-signed request.
     ivr = receipt.verify_ivr(ivr_jws, main._SIGNING_KEY.public())
+    assert ivr["measurement"] == "test-image-digest"
     rp, nonce, ts = "shop.example", "n1", int(time.time())
     holder_sig = holder.sign(receipt._holder_message(ivr["jti"], rp, nonce, ts))
     status, out = _req(base, "POST", "/prove/age-over", {
@@ -97,9 +102,28 @@ def test_end_to_end(server, monkeypatch):
         "birthdate": "2000-01-01", "salt": salts["birthdate"], "threshold": 18,
     })
     assert status == 200, out
-    payload = crypto.jws_verify(out["token"], main._SIGNING_KEY.public())
+    # The token is an SD-JWT VC: `<JWS>~`, iss = the origin the wallet called
+    # (Host header), holder key in cnf, measurement in the evidence.
+    token = out["token"]
+    assert token.endswith("~")
+    payload = receipt.verify_disclosure(token, main._SIGNING_KEY.public())
     assert payload["claim"] == "age_over_18" and payload["value"] is True
     assert payload["aud"] == rp and payload["assurance"] == "gov"
+    assert payload["vct"] == config.DISCLOSURE_VCT
+    assert payload["iss"] == f"https://{base.removeprefix('http://')}"
+    assert payload["cnf"]["jwk"] == crypto.PublicKey.from_raw(holder_pub).jwk_public()
+    assert payload["evidence"]["measurement"] == "test-image-digest"
+
+    # SD-JWT VC issuer metadata: how a relying party resolves the signing keys.
+    status, meta = _req(base, "GET", "/.well-known/jwt-vc-issuer")
+    assert status == 200
+    assert meta["issuer"].startswith("https://")
+    assert meta["jwks"]["keys"][0]["kid"] == main._SIGNING_KEY.kid
+
+    # Status tool endpoint (POST-able for the platform RPC proxy).
+    status, ta = _req(base, "POST", "/trust-anchors/status", {})
+    assert status == 200
+    assert ta["count"] == 1 and ta["oid"] == config.TRUST_ANCHORS_OID
 
 
 def test_verify_identity_rejects_untrusted_document(server, monkeypatch):

@@ -8,8 +8,10 @@ certified field** — without retaining the raw document or biometric.
 It is a plain Docker container (HTTP on `$PORT`, which is required) meant to run
 inside a Trusted Execution Environment with RA-TLS terminated in front; it is
 **not tied to a specific TEE** (it deploys on Privasys enclave-os-virtual, but the
-image is TEE-agnostic). A relying party trusts a claim by verifying the app's
-signature (`/.well-known/jwks.json`) together with the enclave's attestation.
+image is TEE-agnostic). Claims are issued as **SD-JWT VCs** (`dc+sd-jwt`): a
+relying party resolves the issuer keys at `/.well-known/jwt-vc-issuer` (or
+`/.well-known/jwks.json`) and verifies the token together with the enclave's
+attestation.
 
 Assurance target: **GPG45 / UK DVS Medium Level of Confidence (M1C)** — chip
 genuineness (Passive Authentication), live-face ↔ chip-photo match, and a
@@ -45,7 +47,9 @@ document data cross-reference.
 
 3. **`POST /prove/...`** — given an IVR and only the single value being proven,
    the app re-checks that value against the IVR's commitment and returns a
-   short-lived, audience-bound signed token:
+   short-lived, audience-bound **SD-JWT VC** (typ `dc+sd-jwt`,
+   `vct: https://privasys.org/vct/identity-disclosure`, holder key in `cnf.jwk`,
+   the verifier measurement in `evidence`):
    - `/prove/age-over` → `age_over_N` (true/false), no birth date revealed
    - `/prove/age-band` → an age band (e.g. `18-20`)
    - `/prove/field` → one certified field (e.g. `family_name`)
@@ -61,24 +65,26 @@ are cheap, minimal, and never re-expose the whole identity.
 | --- | --- | --- |
 | `GET` | `/health`, `/version` | liveness / deployed version |
 | `GET` | `/.well-known/jwks.json` | signing public key (ES256) |
-| `POST` | `/configure` | load CSCA trust anchors (ICAO master list or PEM); lift the startup freeze |
+| `GET` | `/.well-known/jwt-vc-issuer` | SD-JWT VC issuer metadata (`{ issuer, jwks }`) |
+| `POST` | `/configure` | load CSCA trust anchors (validated ICAO master list); lift the startup freeze |
 | `POST` | `/read-mrz` | → `{ document_number, date_of_birth, date_of_expiry }` (chip access key) |
 | `POST` | `/aa-challenge` | → `{ challenge, token }` — a fresh Active Authentication nonce for the chip to sign |
 | `POST` | `/verify-identity` | → `{ ivr, salts, fields, viz_match }` |
-| `POST` | `/prove/age-over`, `/prove/age-band`, `/prove/field`, `/prove/document-valid` | → `{ token }` |
-| `GET`/`POST` | `/trust-anchors` | read / replace the CSCA master list |
+| `POST` | `/prove/age-over`, `/prove/age-band`, `/prove/field`, `/prove/document-valid` | → `{ token }` (SD-JWT VC) |
+| `POST` | `/trust-anchors` | replace the CSCA master list (validated rotation) |
+| `GET`/`POST` | `/trust-anchors/status` (`GET /trust-anchors` too) | → `{ digest, count, oid }` |
 
 Tool schemas: [`privasys.json`](privasys.json). The app boots **frozen** (503 on
-every path but `/health`, `/version`, `/.well-known/jwks.json`, `/configure`)
-until trust anchors are loaded.
+every path but `/health`, `/version`, the `/.well-known/*` documents and
+`/configure`) until trust anchors are loaded.
 
 ## Trust anchors
 
 The CSCA / ICAO master list used for Passive Authentication is **not** built into
-the image. Load it at runtime via `/configure` — either a raw ICAO CSCA Master
-List (`{"master_list_cms": "<base64 .ml>"}`, whose CMS signature + signer chain
-the app validates before extracting the CSCAs) or a ready PEM bundle
-(`{"trust_anchors_pem": "<PEM>"}`). It is persisted on the per-app encrypted
+the image. Load it at runtime via `/configure` as a raw ICAO CSCA Master List
+(`{"master_list_cms": "<base64 .ml>"}`); the app validates the list's CMS
+signature and its signer chain to the pinned ICAO/UN root before extracting the
+CSCAs — there is no unsigned-PEM path. It is persisted on the per-app encrypted
 volume. The SHA-256 of the active set is published as an attestation extension
 (OID `1.3.6.1.4.1.65230.3.5.1`, the app-custom per-workload arc), so a relying party can pin which trust anchors were
 in force from the RA-TLS certificate. Updating the list changes that OID; no image
@@ -123,8 +129,11 @@ broken reader can never ship.
 
 ## Status
 
-- **Implemented + tested (43 tests):** the receipt/disclosure crypto (ES256,
-  commitments, holder binding, all `prove_*` tokens); **Passive Authentication**
+- **Implemented + tested (52 tests):** the receipt/disclosure crypto (ES256,
+  commitments, holder binding, all `prove_*` tokens as **SD-JWT VCs** with
+  issuer metadata + holder `cnf`); the IVR carries the verifier's **image
+  digest** (launcher-injected `PRIVASYS_IMAGE_DIGEST`, = attestation OID 3.2)
+  as its measurement; **Passive Authentication**
   (EF.SOD CMS + DSC→CSCA chain + per-DG hash integrity); **Active Authentication**
   (ECDSA over a fresh enclave challenge against DG15, anti-clone — required when
   DG15 is present); document-expiry hard fail + DSC/CSCA validity at signing time;

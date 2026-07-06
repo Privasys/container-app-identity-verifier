@@ -30,9 +30,9 @@ from verifier.verification import VerificationError, authenticate_and_extract, m
 _CONFIG_LOCK = threading.Lock()
 _CONFIGURED = False
 _SIGNING_KEY = crypto.SigningKey.load()
-_MEASUREMENT_PLACEHOLDER = "unbound"  # PROD: the enclave measurement (OID 3.2)
 
-_OPEN_PATHS = ("/health", "/version", "/.well-known/jwks.json")
+_OPEN_PATHS = ("/health", "/version", "/.well-known/jwks.json",
+               "/.well-known/jwt-vc-issuer")
 
 
 def _b64u_field(payload: dict, name: str) -> bytes:
@@ -83,7 +83,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/.well-known/jwks.json":
             pub = _SIGNING_KEY.public()
             self._json(200, {"keys": [pub.jwk(_SIGNING_KEY.kid)]})
-        elif path == "/trust-anchors":
+        elif path == "/.well-known/jwt-vc-issuer":
+            # SD-JWT VC issuer metadata (draft-ietf-oauth-sd-jwt-vc): relying
+            # parties resolve the disclosure-token `iss` here to get the keys.
+            pub = _SIGNING_KEY.public()
+            self._json(200, {"issuer": config.issuer(self.headers.get("Host")),
+                             "jwks": {"keys": [pub.jwk(_SIGNING_KEY.kid)]}})
+        elif path in ("/trust-anchors", "/trust-anchors/status"):
             self._json(200, {"digest": trust_anchors.digest_hex(),
                              "count": trust_anchors.count(),
                              "oid": config.TRUST_ANCHORS_OID})
@@ -122,6 +128,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._prove(body, self._do_document_valid)
             elif path == "/trust-anchors":
                 self._set_trust_anchors(body)
+            elif path == "/trust-anchors/status":
+                # POST-able mirror of GET /trust-anchors: the platform RPC proxy
+                # invokes every tool as POST, and the rotation POST above must
+                # not double as the status probe.
+                self._json(200, {"digest": trust_anchors.digest_hex(),
+                                 "count": trust_anchors.count(),
+                                 "oid": config.TRUST_ANCHORS_OID})
             else:
                 self._json(404, {"error": "not found"})
         except (ValueError, VerificationError) as exc:
@@ -258,7 +271,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not bio.face_match:
             raise VerificationError("the live face does not match the document portrait")
         ivr, salts = receipt.build_ivr(
-            _SIGNING_KEY, _MEASUREMENT_PLACEHOLDER, doc, bio, holder_pub
+            _SIGNING_KEY, config.MEASUREMENT, doc, bio, holder_pub
         )
         # `salts` go to the client so it can later open commitments; the enclave
         # keeps nothing. The client auto-fills its profile from doc.fields as
@@ -268,43 +281,49 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _prove(self, body: dict, fn) -> None:
         """Shared pre-flight for every derivation: verify IVR + holder binding,
-        then run the specific derivation `fn(ivr, sub, rp_id, body)`."""
+        then run the specific derivation `fn(ivr, sub, rp_id, body, iss,
+        holder_pub)`. `iss` (from the request Host, i.e. our public origin) and
+        the holder key (→ cnf.jwk) go into the SD-JWT VC."""
         ivr = receipt.verify_ivr(_require(body, "ivr"), _SIGNING_KEY.public())
         sub = _require(body, "sub")
         rp_id = _require(body, "rp_id")
+        holder_pub = _b64u_field(body, "holder_pub")
         receipt.check_holder(
             ivr,
-            _b64u_field(body, "holder_pub"),
+            holder_pub,
             rp_id,
             _require(body, "nonce"),
             int(_require(body, "ts")),
             _b64u_field(body, "holder_sig"),
         )
-        token = fn(ivr, sub, rp_id, body)
+        iss = config.issuer(self.headers.get("Host"))
+        token = fn(ivr, sub, rp_id, body, iss, holder_pub)
         self._json(200, {"token": token})
 
-    def _do_age_over(self, ivr, sub, rp_id, body) -> str:
+    def _do_age_over(self, ivr, sub, rp_id, body, iss, holder_pub) -> str:
         return receipt.prove_age_over(
             _SIGNING_KEY, ivr, sub, rp_id,
             _require(body, "birthdate"), _require(body, "salt"),
-            _require(body, "threshold"),
+            _require(body, "threshold"), iss, holder_pub,
         )
 
-    def _do_age_band(self, ivr, sub, rp_id, body) -> str:
+    def _do_age_band(self, ivr, sub, rp_id, body, iss, holder_pub) -> str:
         return receipt.prove_age_band(
             _SIGNING_KEY, ivr, sub, rp_id,
             _require(body, "birthdate"), _require(body, "salt"),
-            body.get("bands"),
+            body.get("bands"), iss, holder_pub,
         )
 
-    def _do_field(self, ivr, sub, rp_id, body) -> str:
+    def _do_field(self, ivr, sub, rp_id, body, iss, holder_pub) -> str:
         return receipt.prove_field(
             _SIGNING_KEY, ivr, sub, rp_id,
             _require(body, "field"), _require(body, "value"), _require(body, "salt"),
+            iss, holder_pub,
         )
 
-    def _do_document_valid(self, ivr, sub, rp_id, body) -> str:
-        return receipt.prove_document_valid(_SIGNING_KEY, ivr, sub, rp_id)
+    def _do_document_valid(self, ivr, sub, rp_id, body, iss, holder_pub) -> str:
+        return receipt.prove_document_valid(_SIGNING_KEY, ivr, sub, rp_id,
+                                            iss, holder_pub)
 
     def _set_trust_anchors(self, body: dict) -> None:
         # Rotate the anchor set at runtime. Same validation as /configure: only a
@@ -333,6 +352,14 @@ if __name__ == "__main__":
         _CONFIGURED = True
         print(f"identity-verifier: resuming with persisted trust anchors "
               f"({trust_anchors.count()} CSCA, digest={trust_anchors.digest_hex()[:12]})")
+        # Self-recover the manager-level freeze gate too: it re-arms in memory
+        # on every restart, so without this a redeploy stays 503 at the routing
+        # layer until an owner re-sends /configure (the kmip-gateway pattern).
+        if manager.available():
+            try:
+                manager.config_complete()
+            except Exception as exc:  # noqa: BLE001 — non-fatal, owner can re-configure
+                print(f"identity-verifier: config-complete self-recovery failed: {exc}")
 
     # The platform allocates a unique host port per app and passes it as $PORT
     # (host networking -> listen port == host port; see management-service

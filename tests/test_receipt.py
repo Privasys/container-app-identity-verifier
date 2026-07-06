@@ -44,29 +44,49 @@ def test_full_age_over_flow():
     receipt.check_holder(ivr, holder_pub, rp, nonce, ts, _holder_sign(holder, ivr, rp, nonce, ts))
 
     token = receipt.prove_age_over(vkey, ivr, "pairwise-sub", rp,
-                                   "2000-01-01", salts["birthdate"], 18)
-    payload = crypto.jws_verify(token, vkey.public())
+                                   "2000-01-01", salts["birthdate"], 18,
+                                   "https://verifier.example", holder_pub)
+    payload = receipt.verify_disclosure(token, vkey.public())
     assert payload["claim"] == "age_over_18"
     assert payload["value"] is True
     assert payload["assurance"] == "gov"
     assert payload["aud"] == rp
     assert payload["sub"] == "pairwise-sub"
     assert payload["evidence"]["issuing_state"] == "GBR"
+    assert payload["evidence"]["measurement"] == "m1"
+
+
+def test_disclosure_is_sd_jwt_vc():
+    # SD-JWT VC shape: `<JWS>~` serialisation, dc+sd-jwt typ, vct, iss, and the
+    # holder key in cnf.jwk (enables holder key binding at presentation time).
+    import json as _json
+    vkey, holder, holder_pub, ivr, salts = _setup()
+    token = receipt.prove_age_over(vkey, ivr, "s", "rp",
+                                   "2000-01-01", salts["birthdate"], 18,
+                                   "https://verifier.example", holder_pub)
+    assert token.endswith("~")
+    header = _json.loads(crypto.b64u_decode(token.split(".")[0]))
+    assert header["typ"] == "dc+sd-jwt"
+    payload = receipt.verify_disclosure(token, vkey.public())
+    assert payload["vct"] == "https://privasys.org/vct/identity-disclosure"
+    assert payload["iss"] == "https://verifier.example"
+    assert payload["cnf"]["jwk"] == crypto.PublicKey.from_raw(holder_pub).jwk_public()
 
 
 def test_age_band_and_field_and_doc_valid():
     vkey, holder, holder_pub, ivr, salts = _setup()
-    band = crypto.jws_verify(
+    band = receipt.verify_disclosure(
         receipt.prove_age_band(vkey, ivr, "s", "rp", "2000-01-01", salts["birthdate"]),
         vkey.public())
     assert band["claim"] == "age_band" and "-" in band["value"] or band["value"].endswith("+")
 
-    fld = crypto.jws_verify(
+    fld = receipt.verify_disclosure(
         receipt.prove_field(vkey, ivr, "s", "rp", "family_name", "Doe", salts["family_name"]),
         vkey.public())
     assert fld["claim"] == "family_name" and fld["value"] == "Doe"
 
-    dv = crypto.jws_verify(receipt.prove_document_valid(vkey, ivr, "s", "rp"), vkey.public())
+    dv = receipt.verify_disclosure(receipt.prove_document_valid(vkey, ivr, "s", "rp"),
+                                   vkey.public())
     assert dv["claim"] == "document_valid" and dv["value"] is True
 
 

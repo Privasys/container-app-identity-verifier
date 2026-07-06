@@ -125,7 +125,7 @@ def _open(ivr: dict, field: str, value: str, salt_b64: str) -> None:
         raise ValueError(f"value for {field!r} does not match the IVR commitment")
 
 
-# ── disclosure tokens ──────────────────────────────────────────────────────
+# ── disclosure tokens (SD-JWT VC) ──────────────────────────────────────────
 
 def _evidence(ivr: dict) -> dict:
     return {
@@ -133,16 +133,28 @@ def _evidence(ivr: dict) -> dict:
         "doc_type": ivr["doc"]["doc_type"],
         "issuing_state": ivr["doc"]["issuing_state"],
         "verified_at": ivr["iat"],
+        "measurement": ivr.get("measurement", ""),
     }
 
 
 def _token(key: crypto.SigningKey, ivr: dict, sub: str, rp_id: str,
-           claim: str, value) -> str:
+           claim: str, value, iss: str | None = None,
+           holder_pub_raw: bytes | None = None) -> str:
+    """Mint one disclosure as an SD-JWT VC (draft-ietf-oauth-sd-jwt-vc).
+
+    Every claim is plainly disclosed (each token carries exactly the one value
+    the user consented to, so there is nothing left to selectively hide); the
+    serialisation is therefore `<JWS>~` with zero disclosures — valid SD-JWT
+    that off-the-shelf verifiers accept. `cnf.jwk` carries the holder hardware
+    key the IVR is bound to, enabling holder key binding (KB-JWT) at
+    presentation time.
+    """
     now = _now()
     payload = {
-        "iss": ivr["verifier_id"],
+        "iss": iss or config.issuer(None),
         "sub": sub,           # pairwise sub for rp_id (computed by the client)
         "aud": rp_id,
+        "vct": config.DISCLOSURE_VCT,
         "claim": claim,
         "value": value,
         "assurance": "gov",
@@ -150,7 +162,19 @@ def _token(key: crypto.SigningKey, ivr: dict, sub: str, rp_id: str,
         "iat": now,
         "exp": now + config.TOKEN_TTL_SECONDS,
     }
-    return crypto.jws_sign(payload, key, config.DISCLOSURE_TYP)
+    if holder_pub_raw:
+        payload["cnf"] = {"jwk": crypto.PublicKey.from_raw(holder_pub_raw).jwk_public()}
+    return crypto.jws_sign(payload, key, config.DISCLOSURE_TYP) + "~"
+
+
+def verify_disclosure(sd_jwt: str, pub: crypto.PublicKey) -> dict:
+    """Verify a disclosure token (the relying-party recipe) and return its
+    payload. Splits off the SD-JWT disclosure/KB-JWT segments, then checks the
+    issuer JWS signature and expiry. Raises on failure."""
+    payload = crypto.jws_verify(sd_jwt.split("~")[0], pub)
+    if payload.get("exp", 0) < _now():
+        raise ValueError("disclosure token expired")
+    return payload
 
 
 # ── derivations (each = one consented disclosure) ──────────────────────────
@@ -164,10 +188,12 @@ def _age_from(birthdate: str) -> int:
     return today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
 
 
-def prove_age_over(key, ivr, sub, rp_id, birthdate, salt_b64, threshold) -> str:
+def prove_age_over(key, ivr, sub, rp_id, birthdate, salt_b64, threshold,
+                   iss=None, holder_pub_raw=None) -> str:
     _open(ivr, "birthdate", birthdate, salt_b64)
     over = _age_from(birthdate) >= int(threshold)
-    return _token(key, ivr, sub, rp_id, f"age_over_{int(threshold)}", over)
+    return _token(key, ivr, sub, rp_id, f"age_over_{int(threshold)}", over,
+                  iss, holder_pub_raw)
 
 
 # Default age bands (lower-inclusive). Override per request if needed.
@@ -184,19 +210,21 @@ def _band_label(age: int, bounds) -> str:
     return f"{lo}+"
 
 
-def prove_age_band(key, ivr, sub, rp_id, birthdate, salt_b64, bands=None) -> str:
+def prove_age_band(key, ivr, sub, rp_id, birthdate, salt_b64, bands=None,
+                   iss=None, holder_pub_raw=None) -> str:
     _open(ivr, "birthdate", birthdate, salt_b64)
     label = _band_label(_age_from(birthdate), bands or DEFAULT_BANDS)
-    return _token(key, ivr, sub, rp_id, "age_band", label)
+    return _token(key, ivr, sub, rp_id, "age_band", label, iss, holder_pub_raw)
 
 
-def prove_field(key, ivr, sub, rp_id, field, value, salt_b64) -> str:
+def prove_field(key, ivr, sub, rp_id, field, value, salt_b64,
+                iss=None, holder_pub_raw=None) -> str:
     if field not in config.CERTIFIED_FIELDS:
         raise ValueError(f"{field!r} is not a certified field")
     _open(ivr, field, value, salt_b64)
-    return _token(key, ivr, sub, rp_id, field, value)
+    return _token(key, ivr, sub, rp_id, field, value, iss, holder_pub_raw)
 
 
-def prove_document_valid(key, ivr, sub, rp_id) -> str:
+def prove_document_valid(key, ivr, sub, rp_id, iss=None, holder_pub_raw=None) -> str:
     # No field disclosed — only that a genuine government document was verified.
-    return _token(key, ivr, sub, rp_id, "document_valid", True)
+    return _token(key, ivr, sub, rp_id, "document_valid", True, iss, holder_pub_raw)
