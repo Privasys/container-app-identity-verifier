@@ -48,8 +48,9 @@ A successful run prints:
 ```
 
 `trust_anchors_digest` is the SHA-256 of the active anchor set, also published as
-attestation extension OID `1.3.6.1.4.1.65230.2.8`, so a relying party can pin
-which anchors were in force from the RA-TLS certificate. The anchors persist on
+attestation extension OID `1.3.6.1.4.1.65230.3.5.1` (the app-custom per-workload
+arc), so a relying party can pin which anchors were in force from the RA-TLS
+certificate. The anchors persist on
 the app's per-app sealed volume, so a later redeploy onto the same volume comes
 back **already configured**. You only re-run this:
 

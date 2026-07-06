@@ -94,5 +94,5 @@ privasys apps call "$APP" configure ${ENDPOINT:+--endpoint "$ENDPOINT"} --data "
 
 echo >&2
 echo "Done. The response above carries trust_anchors_digest (SHA-256 of the active" >&2
-echo "set, also published at attestation OID 1.3.6.1.4.1.65230.2.8). The anchors" >&2
+echo "set, also published at attestation OID 1.3.6.1.4.1.65230.3.5.1). The anchors" >&2
 echo "persist on the app's sealed volume, so future redeploys come back configured." >&2
