@@ -1,23 +1,25 @@
 {
-    "config_api": {
-        "method": "POST",
-        "path": "/configure"
-    },
-    "tools": [
-        {
-            "name": "configure",
-            "description": "Provision the CSCA/ICAO trust anchors and lift the configure-then-freeze gate. Must be called once per container restart; every other endpoint returns HTTP 503 until it succeeds.",
-            "endpoint": "/configure",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "trust_anchors_pem": {
-                        "type": "string",
-                        "description": "PEM bundle of CSCA / ICAO master-list certificates. SHA-256 of the active set is committed to the per-container RA-TLS leaf at the Identity Trust Anchors OID so the trust anchors are attested without rebuilding the image."
+    "configure": {
+        "name": "configure",
+        "title": "Trust anchors",
+        "endpoint": "/configure",
+        "description": "Provision the CSCA / ICAO trust anchors and lift the configure-then-freeze gate. Required once per container restart; every other endpoint returns HTTP 503 until it succeeds.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "trust_anchors_pem": {
+                    "type": "string",
+                    "description": "PEM bundle of CSCA / ICAO master-list certificates. SHA-256 of the active set is committed to the per-container RA-TLS leaf at the Identity Trust Anchors OID so the trust anchors are attested without rebuilding the image.",
+                    "x-privasys": {
+                        "label": "Trust anchors (PEM bundle)",
+                        "help": "Re-apply after every restart; the SHA-256 of the active set is attested on the RA-TLS leaf."
                     }
                 }
-            }
-        },
+            },
+            "required": ["trust_anchors_pem"]
+        }
+    },
+    "tools": [
         {
             "name": "verify_identity",
             "description": "Verify a passport/ID (ICAO 9303 Passive + Chip Authentication) and that the holder's live face matches the chip portrait (face match + liveness), then return a signed Identity Verification Receipt (IVR) of per-field commitments. Raw document/biometric data is processed in memory and never stored. The client keeps the field values + salts.",
