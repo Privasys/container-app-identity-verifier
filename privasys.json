@@ -7,16 +7,16 @@
         "inputSchema": {
             "type": "object",
             "properties": {
-                "trust_anchors_pem": {
+                "master_list_cms": {
                     "type": "string",
-                    "description": "PEM bundle of CSCA / ICAO master-list certificates. SHA-256 of the active set is committed to the per-container RA-TLS leaf at the Identity Trust Anchors OID so the trust anchors are attested without rebuilding the image.",
+                    "description": "Base64-encoded ICAO CSCA Master List (CMS / SignedData). The verifier checks the CMS signature and that it chains to the pinned ICAO/UN CSCA root, then stores the contained CSCA certificates as trust anchors — raw/unsigned anchors are rejected. SHA-256 of the active set is committed to the per-container RA-TLS leaf at the Identity Trust Anchors OID, so the anchors are attested without rebuilding the image.",
                     "x-privasys": {
-                        "label": "Trust anchors (PEM bundle)",
-                        "help": "Re-apply after every restart; the SHA-256 of the active set is attested on the RA-TLS leaf."
+                        "label": "CSCA Master List (base64 CMS)",
+                        "help": "Only a CMS-signed ICAO CSCA Master List chaining to the ICAO/UN root is accepted. Re-apply after every restart; the SHA-256 of the active set is attested on the RA-TLS leaf."
                     }
                 }
             },
-            "required": ["trust_anchors_pem"]
+            "required": ["master_list_cms"]
         }
     },
     "tools": [
