@@ -210,3 +210,54 @@ def jws_verify(token: str, pub: PublicKey) -> dict:
 def holder_binding(holder_pub_raw: bytes) -> str:
     """The IVR binds to SHA-256 of the holder's SEC1 public key."""
     return b64u_encode(hashlib.sha256(holder_pub_raw).digest())
+
+
+# ── JWKS-verified JWTs (e.g. the Wallet Instance Attestation) ─────────────
+
+def public_from_jwk(jwk: dict) -> "PublicKey":
+    """Build a PublicKey from a minimal EC P-256 public JWK (kty/crv/x/y)."""
+    if jwk.get("kty") != "EC" or jwk.get("crv") != "P-256":
+        raise ValueError("unsupported JWK (want EC P-256)")
+    x = b64u_decode(jwk["x"]) if jwk.get("x") else b""
+    y = b64u_decode(jwk["y"]) if jwk.get("y") else b""
+    if len(x) != _COORD_BYTES or len(y) != _COORD_BYTES:
+        raise ValueError("bad EC coordinate length")
+    return PublicKey.from_raw(b"\x04" + x + y)
+
+
+def normalize_ec_jwk(jwk: dict) -> dict:
+    """Canonical minimal EC public JWK (kty/crv/x/y, fixed 32-byte coords) for
+    equality comparison — tolerant of coordinate zero-padding and extra members."""
+    return public_from_jwk(jwk).jwk_public()
+
+
+def verify_jwt_jwks(token: str, jwks: list[dict]) -> dict:
+    """Verify a compact JWS/JWT against a JWKS of EC P-256 keys and return the
+    claims. Selects the key by header `kid` (any key when the JWT omits kid),
+    pins `alg=ES256`, and checks the signature. Does NOT check `exp`/`typ` — the
+    caller applies those policy checks (mirrors `jws_verify`). Raises ValueError
+    on any failure."""
+    try:
+        h_b64, p_b64, s_b64 = token.split(".")
+    except ValueError as exc:
+        raise ValueError("malformed JWT") from exc
+    try:
+        header = json.loads(b64u_decode(h_b64))
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("malformed JWT header") from exc
+    if header.get("alg") != "ES256":
+        raise ValueError("unexpected JWT alg (want ES256)")
+    kid = header.get("kid")
+    candidates = [k for k in jwks if not kid or k.get("kid") == kid]
+    if not candidates:
+        raise ValueError("no wallet-provider key matches the JWT kid")
+    signing_input = (h_b64 + "." + p_b64).encode()
+    sig = b64u_decode(s_b64)
+    for jwk in candidates:
+        try:
+            pub = public_from_jwk(jwk)
+        except ValueError:
+            continue
+        if pub.verify(signing_input, sig):
+            return json.loads(b64u_decode(p_b64))
+    raise ValueError("JWT signature did not verify against any wallet-provider key")

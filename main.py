@@ -23,7 +23,7 @@ import threading
 import time
 from urllib.parse import urlparse
 
-from verifier import aa, config, crypto, manager, master_list, mrz, receipt, trust_anchors
+from verifier import aa, config, crypto, manager, master_list, mrz, receipt, trust_anchors, wia
 from verifier.verification import VerificationError, authenticate_and_extract, match_biometric
 
 # ── Process state ────────────────────────────────────────────────────────
@@ -93,6 +93,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json(200, {"digest": trust_anchors.digest_hex(),
                              "count": trust_anchors.count(),
                              "oid": config.TRUST_ANCHORS_OID})
+        elif path in ("/wallet-provider-jwks", "/wallet-provider-jwks/status"):
+            self._json(200, {"digest": wia.digest_hex(),
+                             "count": wia.count(),
+                             "oid": config.WALLET_PROVIDER_JWKS_OID,
+                             "require_wia": config.REQUIRE_WIA})
         else:
             self._json(404, {"error": "not found"})
 
@@ -141,6 +146,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._json(200, {"digest": trust_anchors.digest_hex(),
                                  "count": trust_anchors.count(),
                                  "oid": config.TRUST_ANCHORS_OID})
+            elif path == "/wallet-provider-jwks/status":
+                # POST-able mirror of GET /wallet-provider-jwks (RPC proxy).
+                # Rotation is via /configure only (owner/admin-gated), like anchors.
+                self._json(200, {"digest": wia.digest_hex(),
+                                 "count": wia.count(),
+                                 "oid": config.WALLET_PROVIDER_JWKS_OID,
+                                 "require_wia": config.REQUIRE_WIA})
             else:
                 self._json(404, {"error": "not found"})
         except (ValueError, VerificationError) as exc:
@@ -160,16 +172,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # verifier validates its CMS signature and that it chains to the pinned
             # ICAO/UN CSCA root, then stores the contained CSCAs. There is no raw,
             # unsigned anchor path — that would defeat the verification.
+            #
+            # The wallet-provider JWKS (for Wallet Instance Attestation) is an
+            # optional second input on this same owner/admin-gated surface. Either
+            # may be supplied; a JWKS-only call rotates the WIA keys once the
+            # anchors are already in force (a restart persists both).
             ml_b64 = body.get("master_list_cms")
-            if not ml_b64:
+            wp_jwks = body.get("wallet_provider_jwks")
+            if not ml_b64 and wp_jwks is None:
                 self._json(400, {"error": "master_list_cms (base64 ICAO CSCA Master List) is required"})
                 return
             import base64
-            trust_anchors.set_anchors(master_list.verify_and_extract(base64.b64decode(ml_b64)))
+            if ml_b64:
+                trust_anchors.set_anchors(master_list.verify_and_extract(base64.b64decode(ml_b64)))
+            if wp_jwks is not None:
+                wia.set_jwks(wp_jwks if isinstance(wp_jwks, dict) else json.loads(wp_jwks))
+            # The freeze only lifts once the CSCA anchors exist (a JWKS alone
+            # cannot operate — Passive Authentication needs the CSCAs). This also
+            # holds for a JWKS-only follow-up call against already-persisted anchors.
+            if not trust_anchors.load():
+                self._json(400, {"error": "master_list_cms is required to complete configuration"})
+                return
             if manager.available():
                 manager.config_complete()
         except master_list.MasterListError as exc:
             self._json(400, {"error": f"master list rejected: {exc}"})
+            return
+        except ValueError as exc:
+            self._json(400, {"error": f"wallet_provider_jwks rejected: {exc}"})
             return
         except Exception as exc:  # noqa: BLE001 — surface manager/validation error
             self._json(500, {"error": str(exc)})
@@ -178,7 +208,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with _CONFIG_LOCK:
             _CONFIGURED = True
         self._json(200, {"status": "configured",
-                         "trust_anchors_digest": trust_anchors.digest_hex()})
+                         "trust_anchors_digest": trust_anchors.digest_hex(),
+                         "wallet_provider_jwks_digest": wia.digest_hex()})
 
     def _read_mrz(self, body: dict) -> None:
         """Pre-NFC step: OCR the data-page image with OmniMRZ and return the
@@ -263,8 +294,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except aa.AAError as exc:
             raise VerificationError(f"Active Authentication failed: {exc}") from exc
 
+    def _enforce_wia(self, body: dict, holder_pub_raw: bytes) -> None:
+        """Wallet Instance Attestation gate. Free verification must be wallet-only
+        by construction: a valid WIA proves the holder key lives in genuine
+        hardware inside our genuine app, and its cnf.jwk must bind exactly this
+        holder key. Behind IDENTITY_VERIFIER_REQUIRE_WIA (fail-open → enforce):
+        when off, a missing WIA is allowed and an invalid one is logged but not
+        fatal (so a partial-coverage fleet keeps working); when on, absence or
+        invalidity is rejected. Read config.REQUIRE_WIA live so tests/rollout can
+        flip it without restart."""
+        token = body.get("wia")
+        if not token:
+            if config.REQUIRE_WIA:
+                raise VerificationError("a Wallet Instance Attestation is required")
+            return
+        try:
+            wia.verify_wia(token, holder_pub_raw)
+        except ValueError as exc:
+            if config.REQUIRE_WIA:
+                raise VerificationError(f"Wallet Instance Attestation rejected: {exc}") from exc
+            # Rollout: do not break verification on a bad WIA before enforcement,
+            # but never let it pass silently — surface it in the container logs.
+            print(f"identity-verifier: WIA present but invalid (not enforced): {exc}")
+
     def _verify_identity(self, body: dict) -> None:
         holder_pub = _b64u_field(body, "holder_pub")
+        self._enforce_wia(body, holder_pub)
         doc, dgs = authenticate_and_extract(body)
         doc.chip_auth = self._check_active_auth(body, dgs)
         bio = match_biometric(body, dgs)
@@ -294,6 +349,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         sub = _require(body, "sub")
         rp_id = _require(body, "rp_id")
         holder_pub = _b64u_field(body, "holder_pub")
+        self._enforce_wia(body, holder_pub)
         receipt.check_holder(
             ivr,
             holder_pub,

@@ -33,6 +33,13 @@ MEASUREMENT = os.environ.get("PRIVASYS_IMAGE_DIGEST", "unbound")
 # it silently never landed in the leaf.) See kyc-enclave-design §7.4.
 TRUST_ANCHORS_OID = "1.3.6.1.4.1.65230.3.5.1"
 
+# SHA-256 of the active wallet-provider JWKS — the set of IdP (wallet-provider)
+# public keys the enclave trusts to sign a Wallet Instance Attestation (WIA).
+# Provisioned at runtime via /configure (never baked into the image) and attested
+# under the same app-custom arc (…3.5.<n>) as the CSCA anchors, so a relying party
+# can pin which wallet-provider keys were in force. See attribute-billing-plan §3.
+WALLET_PROVIDER_JWKS_OID = "1.3.6.1.4.1.65230.3.5.2"
+
 # Document fields the enclave certifies and commits to in the IVR. These map to
 # the canonical referential attributes the client auto-fills as gov-assurance.
 CERTIFIED_FIELDS = (
@@ -81,6 +88,26 @@ def issuer(host: str | None) -> str:
 # Active Authentication challenge lifetime (seconds). The enclave issues a fresh
 # challenge the chip must sign; it must be redeemed quickly to bound replay.
 AA_CHALLENGE_TTL_SECONDS = int(os.environ.get("IDENTITY_VERIFIER_AA_CHALLENGE_TTL", "120"))
+
+# ── Wallet Instance Attestation (WIA) ────────────────────────────────────
+# Free identity verification must be wallet-only by construction, or verify_identity
+# is a free KYC API for anyone. The IdP (as wallet provider) attests the wallet's
+# hardware holder key and issues a short-lived WIA JWT with cnf.jwk = holder_pub;
+# the enclave requires a valid WIA (and the key match) before issuing an IVR or a
+# disclosure. See attribute-billing-plan §3.
+#
+# Fail-open → enforce rollout gate, mirroring management-service's
+# VAULT_REQUIRE_STEPUP: OFF by default so existing wallets keep working until the
+# fleet ships WIA support, then flip to "true". When false, a missing WIA is
+# allowed (and an invalid one is logged, not fatal); when true, verify_identity /
+# prove_* reject any request without a valid, holder-bound WIA.
+REQUIRE_WIA = os.environ.get("IDENTITY_VERIFIER_REQUIRE_WIA", "false").lower() == "true"
+
+# JOSE typ the WIA carries. Our own minimal WIA JWT for v1 (the attribute-billing
+# plan §8 leaves exact EUDI OAuth-client-attestation wire alignment as a later
+# decision); the typ is checked leniently — trust rests on the signature chaining
+# to a provisioned wallet-provider key plus the cnf.jwk ↔ holder_pub binding.
+WIA_TYP = "wia+jwt"
 
 # NOTE: there is deliberately no env-controlled biometric dev-stub here. A
 # deployed verifier must fail closed when the face models are absent — it must

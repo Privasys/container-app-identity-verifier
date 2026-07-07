@@ -21,15 +21,39 @@ import main
 from verifier import biometrics, config, crypto, master_list, receipt
 
 
-def _configure_with_csca(base, monkeypatch, cscas):
+def _configure_with_csca(base, monkeypatch, cscas, wallet_provider_jwks=None):
     """Configure the running verifier with a synthetic master list containing
     `cscas`, pinning the verifier to that list's (synthetic) ICAO root for the
-    test. Returns the configure HTTP status."""
+    test. Optionally also provision a wallet-provider JWKS (for WIA). Returns the
+    configure HTTP status."""
     root_key, root = fixtures.self_signed_ca("Test ICAO Root")
     monkeypatch.setattr(master_list, "ICAO_ML_ROOT_SHA256",
                         hashlib.sha256(fixtures.cert_der(root)).hexdigest())
     ml = fixtures.build_master_list(root_key, root, root.subject, cscas)
-    return _req(base, "POST", "/configure", {"master_list_cms": _b64(ml)})[0]
+    body = {"master_list_cms": _b64(ml)}
+    if wallet_provider_jwks is not None:
+        body["wallet_provider_jwks"] = wallet_provider_jwks
+    return _req(base, "POST", "/configure", body)[0]
+
+
+def _wia_provider():
+    """A synthetic wallet-provider signing key + the JWKS to provision."""
+    signer = crypto.SigningKey.generate()
+    jwks = {"keys": [signer.public().jwk(signer.kid)]}
+    return signer, jwks
+
+
+def _build_wia(signer, holder_pub_raw, *, exp=None):
+    """Mint a WIA JWT (as the IdP would): ES256, kid = provider kid, cnf.jwk bound
+    to the holder key, exp in the future by default."""
+    payload = {
+        "cnf": {"jwk": crypto.PublicKey.from_raw(holder_pub_raw).jwk_public()},
+        "iat": int(time.time()),
+        "exp": exp if exp is not None else int(time.time()) + 3600,
+        "wallet_version": "1.3.17",
+        "level": "strongbox",
+    }
+    return crypto.jws_sign(payload, signer, config.WIA_TYP)
 
 
 @pytest.fixture()
@@ -259,3 +283,128 @@ def test_verify_identity_requires_aa_when_dg15_present(server, monkeypatch):
     })
     assert st == 400
     assert "active authentication" in str(out).lower()
+
+
+# ── Wallet Instance Attestation (WIA) ────────────────────────────────────
+
+def _configure_for_wia(base, monkeypatch):
+    """Configure with a CSCA + wallet-provider JWKS; return (sod, dg1, signer)."""
+    dg1 = fixtures.build_dg1()
+    sod, csca, _ = fixtures.build_chain({1: dg1})
+    signer, jwks = _wia_provider()
+    assert _configure_with_csca(base, monkeypatch, [csca], wallet_provider_jwks=jwks) == 200
+    return sod, dg1, signer
+
+
+def test_wia_not_required_by_default_allows_missing(server, monkeypatch):
+    # Rollout default: REQUIRE_WIA is false, so a wallet with no WIA still verifies
+    # (a partial-coverage fleet must not break).
+    base = server
+    dg1 = fixtures.build_dg1()
+    sod, csca, _ = fixtures.build_chain({1: dg1})
+    assert _configure_with_csca(base, monkeypatch, [csca]) == 200
+    holder = crypto.SigningKey.generate()
+    st, vi = _req(base, "POST", "/verify-identity", {
+        "holder_pub": crypto.b64u_encode(holder.public().raw()),
+        "sod": _b64(sod), "data_groups": {"1": _b64(dg1)},
+    })
+    assert st == 200, vi
+
+
+def test_wia_required_rejects_missing(server, monkeypatch):
+    base = server
+    monkeypatch.setattr(config, "REQUIRE_WIA", True)
+    sod, dg1, _signer = _configure_for_wia(base, monkeypatch)
+    holder = crypto.SigningKey.generate()
+    st, out = _req(base, "POST", "/verify-identity", {
+        "holder_pub": crypto.b64u_encode(holder.public().raw()),
+        "sod": _b64(sod), "data_groups": {"1": _b64(dg1)},
+    })
+    assert st == 400
+    assert "wallet instance attestation" in str(out).lower()
+
+
+def test_wia_valid_accepted_when_required(server, monkeypatch):
+    base = server
+    monkeypatch.setattr(config, "MEASUREMENT", "test-image-digest")
+    monkeypatch.setattr(config, "REQUIRE_WIA", True)
+    sod, dg1, signer = _configure_for_wia(base, monkeypatch)
+    holder = crypto.SigningKey.generate()
+    holder_pub = holder.public().raw()
+    wia_jwt = _build_wia(signer, holder_pub)
+    st, vi = _req(base, "POST", "/verify-identity", {
+        "holder_pub": crypto.b64u_encode(holder_pub),
+        "sod": _b64(sod), "data_groups": {"1": _b64(dg1)}, "wia": wia_jwt,
+    })
+    assert st == 200, vi
+
+    # The same WIA gates prove_* too.
+    ivr = receipt.verify_ivr(vi["ivr"], main._SIGNING_KEY.public())
+    rp, nonce, ts = "shop.example", "n1", int(time.time())
+    holder_sig = holder.sign(receipt._holder_message(ivr["jti"], rp, nonce, ts))
+    st, out = _req(base, "POST", "/prove/age-over", {
+        "ivr": vi["ivr"], "sub": "pairwise", "rp_id": rp, "nonce": nonce, "ts": ts,
+        "holder_pub": crypto.b64u_encode(holder_pub),
+        "holder_sig": crypto.b64u_encode(holder_sig),
+        "birthdate": "2000-01-01", "salt": vi["salts"]["birthdate"], "threshold": 18,
+        "wia": wia_jwt,
+    })
+    assert st == 200, out
+
+
+def test_wia_rejects_cnf_mismatch(server, monkeypatch):
+    # A WIA that binds a DIFFERENT holder key must not authorise this holder.
+    base = server
+    monkeypatch.setattr(config, "REQUIRE_WIA", True)
+    sod, dg1, signer = _configure_for_wia(base, monkeypatch)
+    holder = crypto.SigningKey.generate()
+    other_pub = crypto.SigningKey.generate().public().raw()
+    wia_jwt = _build_wia(signer, other_pub)  # bound to a different key
+    st, out = _req(base, "POST", "/verify-identity", {
+        "holder_pub": crypto.b64u_encode(holder.public().raw()),
+        "sod": _b64(sod), "data_groups": {"1": _b64(dg1)}, "wia": wia_jwt,
+    })
+    assert st == 400
+    assert "holder" in str(out).lower() or "cnf" in str(out).lower()
+
+
+def test_wia_rejects_expired(server, monkeypatch):
+    base = server
+    monkeypatch.setattr(config, "REQUIRE_WIA", True)
+    sod, dg1, signer = _configure_for_wia(base, monkeypatch)
+    holder = crypto.SigningKey.generate()
+    holder_pub = holder.public().raw()
+    wia_jwt = _build_wia(signer, holder_pub, exp=int(time.time()) - 10)  # expired
+    st, out = _req(base, "POST", "/verify-identity", {
+        "holder_pub": crypto.b64u_encode(holder_pub),
+        "sod": _b64(sod), "data_groups": {"1": _b64(dg1)}, "wia": wia_jwt,
+    })
+    assert st == 400
+    assert "expired" in str(out).lower()
+
+
+def test_wia_rejects_untrusted_signer(server, monkeypatch):
+    # A WIA signed by a key NOT in the provisioned wallet-provider JWKS is rejected.
+    base = server
+    monkeypatch.setattr(config, "REQUIRE_WIA", True)
+    sod, dg1, _signer = _configure_for_wia(base, monkeypatch)
+    rogue = crypto.SigningKey.generate()  # not in the JWKS
+    holder = crypto.SigningKey.generate()
+    holder_pub = holder.public().raw()
+    wia_jwt = _build_wia(rogue, holder_pub)
+    st, out = _req(base, "POST", "/verify-identity", {
+        "holder_pub": crypto.b64u_encode(holder_pub),
+        "sod": _b64(sod), "data_groups": {"1": _b64(dg1)}, "wia": wia_jwt,
+    })
+    assert st == 400
+    assert "wallet instance attestation" in str(out).lower()
+
+
+def test_wia_jwks_status_and_digest(server, monkeypatch):
+    base = server
+    _sod, _dg1, _signer = _configure_for_wia(base, monkeypatch)
+    st, s = _req(base, "POST", "/wallet-provider-jwks/status", {})
+    assert st == 200
+    assert s["count"] == 1
+    assert s["oid"] == config.WALLET_PROVIDER_JWKS_OID
+    assert len(s["digest"]) == 64  # sha256 hex
