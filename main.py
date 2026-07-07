@@ -127,7 +127,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             elif path == "/prove/document-valid":
                 self._prove(body, self._do_document_valid)
             elif path == "/trust-anchors":
-                self._set_trust_anchors(body)
+                # Rotation is NOT a separate endpoint: the anchor set is only
+                # ever (re)provisioned via /configure, the app's single config
+                # surface, which the enclave runtime gates to the app's
+                # owners/admins on every call (the configure-authz standard).
+                # A second mutation path here would bypass that gate over
+                # direct RA-TLS.
+                self._json(410, {"error": "rotate trust anchors via /configure (owner/admin-gated)"})
             elif path == "/trust-anchors/status":
                 # POST-able mirror of GET /trust-anchors: the platform RPC proxy
                 # invokes every tool as POST, and the rotation POST above must
@@ -324,18 +330,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _do_document_valid(self, ivr, sub, rp_id, body, iss, holder_pub) -> str:
         return receipt.prove_document_valid(_SIGNING_KEY, ivr, sub, rp_id,
                                             iss, holder_pub)
-
-    def _set_trust_anchors(self, body: dict) -> None:
-        # Rotate the anchor set at runtime. Same validation as /configure: only a
-        # genuine ICAO CSCA Master List (CMS-verified, chaining to the pinned
-        # ICAO/UN CSCA root) is accepted, never a raw PEM bundle.
-        # PROD: also gate to the app owner / trust-anchor admin (owner bearer).
-        import base64
-        ml_b64 = _require(body, "master_list_cms")
-        pem = master_list.verify_and_extract(base64.b64decode(ml_b64))
-        digest = trust_anchors.set_anchors(pem)
-        self._json(200, {"digest": digest, "count": trust_anchors.count(),
-                         "oid": config.TRUST_ANCHORS_OID})
 
     def log_message(self, fmt: str, *args: object) -> None:  # noqa: A002
         pass
