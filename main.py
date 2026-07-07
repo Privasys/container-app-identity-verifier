@@ -34,6 +34,13 @@ _SIGNING_KEY = crypto.SigningKey.load()
 _OPEN_PATHS = ("/health", "/version", "/.well-known/jwks.json",
                "/.well-known/jwt-vc-issuer")
 
+# Trusted headers the enclave runtime injects after it has verified a relying
+# party's disclosure voucher (it strips any client-supplied copy first, so these
+# are trustworthy). The Claims header lists the authorised marketplace attribute
+# keys; the Jti is the settlement handle we echo into the disclosure for audit.
+_VOUCHER_CLAIMS_HEADER = "X-Privasys-Voucher-Claims"
+_VOUCHER_JTI_HEADER = "X-Privasys-Voucher-Jti"
+
 
 def _b64u_field(payload: dict, name: str) -> bytes:
     v = payload.get(name)
@@ -124,13 +131,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             elif path == "/verify-identity":
                 self._verify_identity(body)
             elif path == "/prove/age-over":
-                self._prove(body, self._do_age_over)
+                self._prove(body, self._do_age_over, path)
             elif path == "/prove/age-band":
-                self._prove(body, self._do_age_band)
+                self._prove(body, self._do_age_band, path)
             elif path == "/prove/field":
-                self._prove(body, self._do_field)
+                self._prove(body, self._do_field, path)
             elif path == "/prove/document-valid":
-                self._prove(body, self._do_document_valid)
+                self._prove(body, self._do_document_valid, path)
             elif path == "/trust-anchors":
                 # Rotation is NOT a separate endpoint: the anchor set is only
                 # ever (re)provisioned via /configure, the app's single config
@@ -340,16 +347,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._json(200, {"ivr": ivr, "salts": salts, "fields": doc.fields,
                          "viz_match": doc.viz_match})
 
-    def _prove(self, body: dict, fn) -> None:
+    def _prove(self, body: dict, fn, path: str) -> None:
         """Shared pre-flight for every derivation: verify IVR + holder binding,
-        then run the specific derivation `fn(ivr, sub, rp_id, body, iss,
-        holder_pub)`. `iss` (from the request Host, i.e. our public origin) and
-        the holder key (→ cnf.jwk) go into the SD-JWT VC."""
+        gate on the relying party's paid disclosure voucher, then run the
+        specific derivation `fn(ivr, sub, rp_id, body, iss, holder_pub)`. `iss`
+        (from the request Host, i.e. our public origin) and the holder key
+        (→ cnf.jwk) go into the SD-JWT VC."""
         ivr = receipt.verify_ivr(_require(body, "ivr"), _SIGNING_KEY.public())
         sub = _require(body, "sub")
         rp_id = _require(body, "rp_id")
         holder_pub = _b64u_field(body, "holder_pub")
         self._enforce_wia(body, holder_pub)
+        jti = self._voucher_gate(path, body, rp_id)
         receipt.check_holder(
             ivr,
             holder_pub,
@@ -360,7 +369,43 @@ class Handler(http.server.BaseHTTPRequestHandler):
         )
         iss = config.issuer(self.headers.get("Host"))
         token = fn(ivr, sub, rp_id, body, iss, holder_pub)
-        self._json(200, {"token": token})
+        resp = {"token": token}
+        if jti:
+            # Echo the settlement handle so the disclosure is auditable against
+            # the reservation the runtime settles.
+            resp["voucher_jti"] = jti
+        self._json(200, resp)
+
+    def _attr_key_for(self, path: str, body: dict) -> str:
+        """The marketplace attribute key a prove_* discloses, in the provider-
+        namespaced form the voucher authorises."""
+        if path == "/prove/age-over":
+            return f"privasys:age_over_{int(body.get('threshold', 0))}"
+        if path == "/prove/age-band":
+            return "privasys:age_band"
+        if path == "/prove/document-valid":
+            return "privasys:document_valid"
+        if path == "/prove/field":
+            return f"privasys:{body.get('field', '')}"
+        return ""
+
+    def _voucher_gate(self, path: str, body: dict, rp_id: str) -> str:
+        """Paid-disclosure gate. When the runtime has verified an RP voucher it
+        injects the authorised attribute keys as a trusted header; the requested
+        attribute must be among them. A holder proving their OWN attributes (no
+        paying RP) carries no voucher and is exempt. Returns the voucher jti when
+        one was consumed (for audit), else the empty string. Raises when a
+        voucher is present but does not authorise this attribute, or when one is
+        required for a non-self relying party and absent."""
+        authorised = [c for c in self.headers.get(_VOUCHER_CLAIMS_HEADER, "").split(",") if c]
+        key = self._attr_key_for(path, body)
+        if authorised:
+            if key not in authorised:
+                raise VerificationError(f"the disclosure voucher does not authorise {key}")
+            return self.headers.get(_VOUCHER_JTI_HEADER, "")
+        if config.REQUIRE_VOUCHER and rp_id not in config.SELF_AUDIENCES:
+            raise VerificationError("a paid disclosure voucher is required for this relying party")
+        return ""
 
     def _do_age_over(self, ivr, sub, rp_id, body, iss, holder_pub) -> str:
         return receipt.prove_age_over(

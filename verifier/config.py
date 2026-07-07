@@ -109,6 +109,25 @@ REQUIRE_WIA = os.environ.get("IDENTITY_VERIFIER_REQUIRE_WIA", "false").lower() =
 # to a provisioned wallet-provider key plus the cnf.jwk ↔ holder_pub binding.
 WIA_TYP = "wia+jwt"
 
+# ── Paid disclosures (attribute vouchers) ────────────────────────────────
+# A relying party pays per disclosure. The enclave runtime verifies the RP's
+# disclosure voucher and injects the authorised attribute keys as a trusted
+# header; a prove_* for a paying RP must be covered by that voucher. Whenever a
+# voucher header is present its coverage is ALWAYS enforced. REQUIRE_VOUCHER adds
+# the stricter rule that a non-self relying party must present one at all — OFF
+# by default (soft rollout, mirroring REQUIRE_WIA) so wallet-internal and
+# transitional callers keep working until the fleet mints vouchers end to end.
+REQUIRE_VOUCHER = os.environ.get("IDENTITY_VERIFIER_REQUIRE_VOUCHER", "false").lower() == "true"
+
+# Relying-party identifiers exempt from REQUIRE_VOUCHER: the holder proving their
+# OWN attributes through their wallet (no paying RP) carries no voucher. Comma-
+# separated; defaults cover the wallet's own origin and an explicit self marker.
+SELF_AUDIENCES = {
+    a.strip()
+    for a in os.environ.get("IDENTITY_VERIFIER_SELF_AUDIENCES", "self,privasys.id").split(",")
+    if a.strip()
+}
+
 # NOTE: there is deliberately no env-controlled biometric dev-stub here. A
 # deployed verifier must fail closed when the face models are absent — it must
 # never assert a face match it did not compute. The test-only stub lives as a

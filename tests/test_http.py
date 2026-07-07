@@ -71,10 +71,12 @@ def server(monkeypatch, tmp_path):
     httpd.shutdown()
 
 
-def _req(base, method, path, body=None):
+def _req(base, method, path, body=None, headers=None):
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(base + path, data=data, method=method,
-                                 headers={"Content-Type": "application/json"})
+    hdrs = {"Content-Type": "application/json"}
+    if headers:
+        hdrs.update(headers)
+    req = urllib.request.Request(base + path, data=data, method=method, headers=hdrs)
     try:
         with urllib.request.urlopen(req) as resp:
             return resp.status, json.loads(resp.read() or b"{}")
@@ -148,6 +150,75 @@ def test_end_to_end(server, monkeypatch):
     status, ta = _req(base, "POST", "/trust-anchors/status", {})
     assert status == 200
     assert ta["count"] == 1 and ta["oid"] == config.TRUST_ANCHORS_OID
+
+
+def _proven_setup(base, monkeypatch):
+    """Configure + verify-identity, returning the pieces a /prove call needs."""
+    dg1 = fixtures.build_dg1()
+    sod, csca, _ = fixtures.build_chain({1: dg1})
+    assert _configure_with_csca(base, monkeypatch, [csca]) == 200
+    holder = crypto.SigningKey.generate()
+    holder_pub = holder.public().raw()
+    status, vi = _req(base, "POST", "/verify-identity", {
+        "holder_pub": crypto.b64u_encode(holder_pub),
+        "sod": _b64(sod), "data_groups": {"1": _b64(dg1)},
+    })
+    assert status == 200, vi
+    return holder, holder_pub, vi["ivr"], vi["salts"]
+
+
+def _age_over_body(holder, holder_pub, ivr_jws, salts, rp="shop.example", threshold=18):
+    ivr = receipt.verify_ivr(ivr_jws, main._SIGNING_KEY.public())
+    nonce, ts = "n1", int(time.time())
+    holder_sig = holder.sign(receipt._holder_message(ivr["jti"], rp, nonce, ts))
+    return {
+        "ivr": ivr_jws, "sub": "pairwise", "rp_id": rp, "nonce": nonce, "ts": ts,
+        "holder_pub": crypto.b64u_encode(holder_pub),
+        "holder_sig": crypto.b64u_encode(holder_sig),
+        "birthdate": "2000-01-01", "salt": salts["birthdate"], "threshold": threshold,
+    }
+
+
+def test_voucher_gate_enforces_and_echoes_jti(server, monkeypatch):
+    """A verified voucher (its authorised keys injected by the runtime as the
+    trusted header) that covers the requested attribute is honoured and its jti
+    is echoed for settlement audit; one that does not cover it is refused."""
+    base = server
+    holder, holder_pub, ivr_jws, salts = _proven_setup(base, monkeypatch)
+    body = _age_over_body(holder, holder_pub, ivr_jws, salts)
+
+    # Voucher authorises age_over_18 → 200 + jti echoed.
+    st, out = _req(base, "POST", "/prove/age-over", body, headers={
+        "X-Privasys-Voucher-Claims": "privasys:age_over_18,privasys:nationality",
+        "X-Privasys-Voucher-Jti": "vch-abc",
+    })
+    assert st == 200, out
+    assert out["voucher_jti"] == "vch-abc"
+
+    # Voucher authorises only nationality → age_over_18 refused.
+    st, out = _req(base, "POST", "/prove/age-over", body, headers={
+        "X-Privasys-Voucher-Claims": "privasys:nationality",
+        "X-Privasys-Voucher-Jti": "vch-def",
+    })
+    assert st == 400 and "does not authorise" in out["error"]
+
+
+def test_voucher_required_in_strict_mode(server, monkeypatch):
+    """With REQUIRE_VOUCHER on, a non-self relying party with no voucher is
+    refused; a self audience (wallet-internal proof) is still allowed."""
+    base = server
+    monkeypatch.setattr(config, "REQUIRE_VOUCHER", True)
+    monkeypatch.setattr(config, "SELF_AUDIENCES", {"self"})
+    holder, holder_pub, ivr_jws, salts = _proven_setup(base, monkeypatch)
+
+    st, out = _req(base, "POST", "/prove/age-over",
+                   _age_over_body(holder, holder_pub, ivr_jws, salts, rp="shop.example"))
+    assert st == 400 and "voucher is required" in out["error"]
+
+    st, out = _req(base, "POST", "/prove/age-over",
+                   _age_over_body(holder, holder_pub, ivr_jws, salts, rp="self"))
+    assert st == 200, out
+    assert "voucher_jti" not in out
 
 
 def test_verify_identity_rejects_untrusted_document(server, monkeypatch):
