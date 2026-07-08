@@ -10,13 +10,15 @@ R||S signatures) needed to emit/verify compact JWS.
 Why ES256: consistent with the Privasys IdP's ES256/JWKS ecosystem so relying
 parties verify disclosure tokens the same way they verify IdP tokens.
 
-PROD NOTE: the signing key is **generated inside the enclave** and then sealed to
-the Enclave Vault, which re-releases it only to an instance presenting the same
-approved measurement (see kyc-enclave-design.md §4) — so any approved-measurement
-instance can verify an IVR another issued, and the key survives restarts /
-owner-approved upgrades without ever being minted outside the enclave. This
-module loads a key from PEM (env/secret) or generates an ephemeral one for
-dev/test; wiring the vault seal/release is a separate step.
+Key custody (kyc-enclave-design.md §4): the signing key is **generated inside
+the enclave on first start** and persisted on the per-app sealed volume
+(IDENTITY_VERIFIER_DATA_DIR, /data on the platform). That volume's data key is
+vault-wrapped under the app-identity (MR_APP) policy, so the signing key is
+re-released only to owner-approved measurements of THIS app: it survives
+restarts and promoted upgrades, and it is never minted or exportable outside
+the enclave. On the platform an externally supplied PEM is REFUSED — a key a
+human ever held could mint "enclave" receipts from a laptop. The PEM env and
+the ephemeral fallback exist for dev/test only.
 """
 
 from __future__ import annotations
@@ -135,15 +137,61 @@ class SigningKey:
 
     @classmethod
     def load(cls) -> "SigningKey":
-        """Load from IDENTITY_VERIFIER_SIGNING_KEY_PEM (path or inline PEM),
-        else generate an ephemeral key (dev/test). PROD: generate in-enclave on
-        first start and seal to the vault, which re-releases it to the same
-        approved measurement (§4)."""
+        """Resolve the signing key, strongest custody first:
+
+        1. The key persisted on the per-app sealed volume — generated
+           IN-ENCLAVE on first start, never exported. The volume's data key is
+           vault-wrapped under the MR_APP policy, so it re-releases only to
+           owner-approved measurements of this app (survives restarts and
+           promoted upgrades; a restart no longer rotates the JWKS and
+           strands outstanding IVRs).
+        2. IDENTITY_VERIFIER_SIGNING_KEY_PEM (path or inline) — dev/test
+           ONLY. On the platform (PRIVASYS_IMAGE_DIGEST set) it is refused:
+           a key a human ever held could mint "enclave" receipts outside
+           the enclave, which would void the audit story.
+        3. Ephemeral — bare dev/test runs with no data dir.
+        """
+        on_platform = bool(os.environ.get("PRIVASYS_IMAGE_DIGEST"))
         ref = os.environ.get("IDENTITY_VERIFIER_SIGNING_KEY_PEM", "")
         if ref:
+            if on_platform:
+                raise RuntimeError(
+                    "refusing an externally supplied signing key inside the "
+                    "enclave — the key is generated in-enclave and sealed on "
+                    "the app volume (unset IDENTITY_VERIFIER_SIGNING_KEY_PEM)"
+                )
             data = open(ref, "rb").read() if os.path.exists(ref) else ref.encode()
             return cls.from_pem(data)
-        return cls.generate()
+
+        key_path = os.path.join(
+            os.environ.get("IDENTITY_VERIFIER_DATA_DIR", "/data"), "signing_key.pem"
+        )
+        try:
+            if os.path.exists(key_path):
+                with open(key_path, "rb") as f:
+                    return cls.from_pem(f.read())
+            key = cls.generate()
+            pem = key._priv.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+            # 0600, exclusive create: single-writer app; a concurrent loser
+            # falls through to reading the winner's key on next start.
+            fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, pem)
+            finally:
+                os.close(fd)
+            return key
+        except OSError as exc:
+            if on_platform:
+                # The sealed volume is the ONLY acceptable custody in prod —
+                # never fall through to an ephemeral (restart-rotating) key.
+                raise RuntimeError(
+                    f"cannot persist the signing key on the sealed volume: {exc}"
+                ) from exc
+            return cls.generate()
 
 
 @dataclass
