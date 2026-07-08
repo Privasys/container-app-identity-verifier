@@ -27,12 +27,22 @@ def _now() -> int:
 
 # ── IVR ──────────────────────────────────────────────────────────────────
 
+# Commitment key for the DG2 portrait (bytes, committed as b64url text). NOT a
+# CERTIFIED_FIELD: the photo is never disclosable as a value via prove_field —
+# its only use is commit-and-prove for /prove/presence, where the wallet
+# re-supplies the portrait so the enclave can face-match a FRESH selfie against
+# the document the IVR certified. Additive to IVR v1: old IVRs simply have no
+# portrait commitment and cannot do presence (re-verify to enable).
+PORTRAIT_FIELD = "picture_dg2"
+
+
 def build_ivr(
     key: crypto.SigningKey,
     measurement: str,
     doc: DocResult,
     bio: BioResult,
     holder_pub_raw: bytes,
+    dg2: bytes = b"",
 ) -> tuple[str, dict]:
     """Return (ivr_jws, salts) where salts maps field → b64url(salt).
 
@@ -44,6 +54,13 @@ def build_ivr(
         salt = crypto.new_salt()
         salts[field] = crypto.b64u_encode(salt)
         commitments[field] = crypto.commit(value, salt)
+    if dg2:
+        # Commit the portrait as its b64url encoding so the text commit()
+        # primitive applies unchanged; the wallet re-derives the identical
+        # string from its stored DG2 bytes at presence time.
+        salt = crypto.new_salt()
+        salts[PORTRAIT_FIELD] = crypto.b64u_encode(salt)
+        commitments[PORTRAIT_FIELD] = crypto.commit(crypto.b64u_encode(dg2), salt)
 
     now = _now()
     payload = {
@@ -139,7 +156,8 @@ def _evidence(ivr: dict) -> dict:
 
 def _token(key: crypto.SigningKey, ivr: dict, sub: str, rp_id: str,
            claim: str, value, iss: str | None = None,
-           holder_pub_raw: bytes | None = None) -> str:
+           holder_pub_raw: bytes | None = None,
+           extra_evidence: dict | None = None) -> str:
     """Mint one disclosure as an SD-JWT VC (draft-ietf-oauth-sd-jwt-vc).
 
     Every claim is plainly disclosed (each token carries exactly the one value
@@ -150,6 +168,9 @@ def _token(key: crypto.SigningKey, ivr: dict, sub: str, rp_id: str,
     presentation time.
     """
     now = _now()
+    evidence = _evidence(ivr)
+    if extra_evidence:
+        evidence.update(extra_evidence)
     payload = {
         "iss": iss or config.issuer(None),
         "sub": sub,           # pairwise sub for rp_id (computed by the client)
@@ -158,7 +179,7 @@ def _token(key: crypto.SigningKey, ivr: dict, sub: str, rp_id: str,
         "claim": claim,
         "value": value,
         "assurance": "gov",
-        "evidence": _evidence(ivr),
+        "evidence": evidence,
         "iat": now,
         "exp": now + config.TOKEN_TTL_SECONDS,
     }
@@ -228,3 +249,28 @@ def prove_field(key, ivr, sub, rp_id, field, value, salt_b64,
 def prove_document_valid(key, ivr, sub, rp_id, iss=None, holder_pub_raw=None) -> str:
     # No field disclosed — only that a genuine government document was verified.
     return _token(key, ivr, sub, rp_id, "document_valid", True, iss, holder_pub_raw)
+
+
+def prove_presence(key, ivr, sub, rp_id, dg2_b64u, salt_b64, bio,
+                   iss=None, holder_pub_raw=None) -> str:
+    """Fresh-presence disclosure: the DOCUMENT HOLDER is physically present now.
+
+    Platform biometrics (FaceID et al.) prove only "someone enrolled on this
+    device"; this proves the person in front of the camera is the person on the
+    government document. The wallet re-supplies the DG2 portrait it kept
+    (commit-and-prove: it must open the IVR's portrait commitment, so only the
+    exact photo this IVR certified is accepted) plus a fresh selfie the caller
+    has already face-matched + liveness-checked against it (`bio`). Fail
+    closed: no match, no token — the derivation never mints a negative.
+    """
+    _open(ivr, PORTRAIT_FIELD, dg2_b64u, salt_b64)
+    if not bio.face_match:
+        raise ValueError("the live face does not match the document portrait")
+    return _token(
+        key, ivr, sub, rp_id, "holder_present", True, iss, holder_pub_raw,
+        extra_evidence={"presence": {
+            "face_match": True,
+            "liveness_score": round(bio.liveness_score, 4),
+            "checked_at": _now(),
+        }},
+    )

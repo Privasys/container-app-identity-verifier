@@ -133,3 +133,79 @@ def test_failed_verification_not_accepted():
     ivr_jws, _ = receipt.build_ivr(vkey, "m", _doc(), BioResult(False, 0.1), holder_pub)
     with pytest.raises(ValueError):
         receipt.verify_ivr(ivr_jws, vkey.public())
+
+
+# ── /prove/presence (fresh holder check, commit-and-prove on the portrait) ──
+
+_DG2 = b"\x02fake-jpeg-portrait-bytes\xff"
+
+
+def _setup_with_portrait():
+    vkey = crypto.SigningKey.generate()
+    holder = crypto.SigningKey.generate()
+    holder_pub = holder.public().raw()
+    ivr_jws, salts = receipt.build_ivr(
+        vkey, "m1", _doc(), BioResult(True, 0.99), holder_pub, dg2=_DG2)
+    ivr = receipt.verify_ivr(ivr_jws, vkey.public())
+    return vkey, holder_pub, ivr, salts
+
+
+def test_presence_full_flow():
+    vkey, holder_pub, ivr, salts = _setup_with_portrait()
+    dg2_b64u = crypto.b64u_encode(_DG2)
+    token = receipt.prove_presence(
+        vkey, ivr, "pairwise-sub", "casino.example",
+        dg2_b64u, salts[receipt.PORTRAIT_FIELD], BioResult(True, 0.97),
+        "https://verifier.example", holder_pub)
+    payload = receipt.verify_disclosure(token, vkey.public())
+    assert payload["claim"] == "holder_present"
+    assert payload["value"] is True
+    assert payload["assurance"] == "gov"
+    presence = payload["evidence"]["presence"]
+    assert presence["face_match"] is True
+    assert presence["liveness_score"] == 0.97
+    assert presence["checked_at"] >= payload["evidence"]["verified_at"]
+    # Base evidence still ties the receipt to the document + enclave.
+    assert payload["evidence"]["measurement"] == "m1"
+
+
+def test_presence_wrong_portrait_rejected():
+    # A substituted photo (someone else's genuine-looking DG2) must not open
+    # the commitment — only the exact portrait this IVR certified is accepted.
+    vkey, holder_pub, ivr, salts = _setup_with_portrait()
+    with pytest.raises(ValueError):
+        receipt.prove_presence(
+            vkey, ivr, "s", "rp",
+            crypto.b64u_encode(b"another-portrait"), salts[receipt.PORTRAIT_FIELD],
+            BioResult(True, 0.99))
+
+
+def test_presence_face_mismatch_never_mints():
+    # Fail closed: a failed live match raises; there is no negative token.
+    vkey, holder_pub, ivr, salts = _setup_with_portrait()
+    with pytest.raises(ValueError):
+        receipt.prove_presence(
+            vkey, ivr, "s", "rp",
+            crypto.b64u_encode(_DG2), salts[receipt.PORTRAIT_FIELD],
+            BioResult(False, 0.99))
+
+
+def test_presence_unavailable_on_old_ivr():
+    # IVRs minted before the portrait commitment (or chips without DG2)
+    # cannot do presence — clean error, not a bypass.
+    vkey, holder, holder_pub, ivr, salts = _setup()  # no dg2
+    assert receipt.PORTRAIT_FIELD not in salts
+    with pytest.raises(ValueError):
+        receipt.prove_presence(
+            vkey, ivr, "s", "rp",
+            crypto.b64u_encode(_DG2), crypto.b64u_encode(crypto.new_salt()),
+            BioResult(True, 0.99))
+
+
+def test_portrait_is_not_a_certifiable_text_field():
+    # The photo must never be disclosable as a value via prove_field.
+    vkey, holder_pub, ivr, salts = _setup_with_portrait()
+    with pytest.raises(ValueError):
+        receipt.prove_field(
+            vkey, ivr, "s", "rp", receipt.PORTRAIT_FIELD,
+            crypto.b64u_encode(_DG2), salts[receipt.PORTRAIT_FIELD])

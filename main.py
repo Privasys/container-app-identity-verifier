@@ -138,6 +138,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._prove(body, self._do_field, path)
             elif path == "/prove/document-valid":
                 self._prove(body, self._do_document_valid, path)
+            elif path == "/prove/presence":
+                self._prove(body, self._do_presence, path)
             elif path == "/trust-anchors":
                 # Rotation is NOT a separate endpoint: the anchor set is only
                 # ever (re)provisioned via /configure, the app's single config
@@ -338,8 +340,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # 200 as success, so the mismatch must fail here, at issuance.
         if not bio.face_match:
             raise VerificationError("the live face does not match the document portrait")
+        # Commit the DG2 portrait alongside the text fields so the wallet can
+        # later prove FRESH holder presence (/prove/presence) against exactly
+        # this document's photo, without the enclave retaining it.
         ivr, salts = receipt.build_ivr(
-            _SIGNING_KEY, config.MEASUREMENT, doc, bio, holder_pub
+            _SIGNING_KEY, config.MEASUREMENT, doc, bio, holder_pub,
+            dg2=dgs.get(2, b""),
         )
         # `salts` go to the client so it can later open commitments; the enclave
         # keeps nothing. The client auto-fills its profile from doc.fields as
@@ -385,6 +391,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return "privasys:age_band"
         if path == "/prove/document-valid":
             return "privasys:document_valid"
+        if path == "/prove/presence":
+            return "privasys:holder_present"
         if path == "/prove/field":
             return f"privasys:{body.get('field', '')}"
         return ""
@@ -431,6 +439,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _do_document_valid(self, ivr, sub, rp_id, body, iss, holder_pub) -> str:
         return receipt.prove_document_valid(_SIGNING_KEY, ivr, sub, rp_id,
                                             iss, holder_pub)
+
+    def _do_presence(self, ivr, sub, rp_id, body, iss, holder_pub) -> str:
+        """Fresh holder presence: selfie + liveness against the committed DG2
+        portrait. `dg2` is the b64url portrait exactly as committed at verify
+        time; `selfie` is a standard-base64 fresh capture. Fail closed — a
+        non-match raises (400), so the runtime releases the RP's voucher hold
+        rather than settling a failed check."""
+        dg2_b64u = _require(body, "dg2")
+        salt = _require(body, "salt")
+        try:
+            selfie = base64.b64decode(_require(body, "selfie"), validate=False)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError("selfie must be base64") from exc
+        from verifier import biometrics
+        try:
+            bio = biometrics.match(crypto.b64u_decode(dg2_b64u), selfie)
+        except biometrics.BiometricError as exc:
+            raise VerificationError(str(exc)) from exc
+        return receipt.prove_presence(
+            _SIGNING_KEY, ivr, sub, rp_id, dg2_b64u, salt, bio, iss, holder_pub,
+        )
 
     def log_message(self, fmt: str, *args: object) -> None:  # noqa: A002
         pass

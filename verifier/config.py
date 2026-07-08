@@ -9,7 +9,7 @@ import os
 
 # Bumped per release so the deployed measurement (image digest at OID 3.2)
 # changes and versions are distinguishable via GET /version.
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 
 # The verifier's own measurement, stamped into every IVR so a relying party can
 # tell which audited verifier code produced a receipt. PRIVASYS_IMAGE_DIGEST is
