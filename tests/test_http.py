@@ -65,6 +65,11 @@ def server(monkeypatch, tmp_path):
     monkeypatch.setattr(biometrics, "_models_available", lambda: False)
     monkeypatch.setenv("IDENTITY_VERIFIER_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(main, "_CONFIGURED", False)
+    # Enforcement flags default ON since 0.5.1 (baked into the measured
+    # image). The generic flow tests exercise the dev-relaxed mode; the
+    # strict-mode tests re-enable each flag explicitly.
+    monkeypatch.setattr(config, "REQUIRE_WIA", False)
+    monkeypatch.setattr(config, "REQUIRE_VOUCHER", False)
     httpd = HTTPServer(("127.0.0.1", 0), main.Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{httpd.server_address[1]}"
@@ -367,7 +372,7 @@ def _configure_for_wia(base, monkeypatch):
     return sod, dg1, signer
 
 
-def test_wia_not_required_by_default_allows_missing(server, monkeypatch):
+def test_wia_missing_allowed_when_relaxed(server, monkeypatch):
     # Rollout default: REQUIRE_WIA is false, so a wallet with no WIA still verifies
     # (a partial-coverage fleet must not break).
     base = server

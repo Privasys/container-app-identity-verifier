@@ -9,7 +9,7 @@ import os
 
 # Bumped per release so the deployed measurement (image digest at OID 3.2)
 # changes and versions are distinguishable via GET /version.
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 
 # The verifier's own measurement, stamped into every IVR so a relying party can
 # tell which audited verifier code produced a receipt. PRIVASYS_IMAGE_DIGEST is
@@ -96,12 +96,13 @@ AA_CHALLENGE_TTL_SECONDS = int(os.environ.get("IDENTITY_VERIFIER_AA_CHALLENGE_TT
 # the enclave requires a valid WIA (and the key match) before issuing an IVR or a
 # disclosure. See attribute-billing-plan §3.
 #
-# Fail-open → enforce rollout gate, mirroring management-service's
-# VAULT_REQUIRE_STEPUP: OFF by default so existing wallets keep working until the
-# fleet ships WIA support, then flip to "true". When false, a missing WIA is
-# allowed (and an invalid one is logged, not fatal); when true, verify_identity /
-# prove_* reject any request without a valid, holder-bound WIA.
-REQUIRE_WIA = os.environ.get("IDENTITY_VERIFIER_REQUIRE_WIA", "false").lower() == "true"
+# ENFORCED BY DEFAULT since 0.5.1 (the WS6 flag flip): the wallet fleet ships
+# WIA (>= 1.3.18), so a missing/invalid WIA now rejects. The default is baked
+# into the measured image — relying parties can verify they are talking to an
+# enforcing build by its digest alone. Dev/test may still relax it explicitly
+# via env (there is deliberately no owner env channel on the platform, so a
+# deployed enclave cannot be quietly de-fanged).
+REQUIRE_WIA = os.environ.get("IDENTITY_VERIFIER_REQUIRE_WIA", "true").lower() == "true"
 
 # JOSE typ the WIA carries. Our own minimal WIA JWT for v1 (the attribute-billing
 # plan §8 leaves exact EUDI OAuth-client-attestation wire alignment as a later
@@ -114,10 +115,11 @@ WIA_TYP = "wia+jwt"
 # disclosure voucher and injects the authorised attribute keys as a trusted
 # header; a prove_* for a paying RP must be covered by that voucher. Whenever a
 # voucher header is present its coverage is ALWAYS enforced. REQUIRE_VOUCHER adds
-# the stricter rule that a non-self relying party must present one at all — OFF
-# by default (soft rollout, mirroring REQUIRE_WIA) so wallet-internal and
-# transitional callers keep working until the fleet mints vouchers end to end.
-REQUIRE_VOUCHER = os.environ.get("IDENTITY_VERIFIER_REQUIRE_VOUCHER", "false").lower() == "true"
+# the stricter rule that a non-self relying party must present one at all —
+# ENFORCED BY DEFAULT since 0.5.1 (the WS6 flag flip; the voucher loop is proven
+# end to end on production). Baked into the measured image like REQUIRE_WIA;
+# holders proving their OWN attributes (SELF_AUDIENCES) remain exempt.
+REQUIRE_VOUCHER = os.environ.get("IDENTITY_VERIFIER_REQUIRE_VOUCHER", "true").lower() == "true"
 
 # Relying-party identifiers exempt from REQUIRE_VOUCHER: the holder proving their
 # OWN attributes through their wallet (no paying RP) carries no voucher. Comma-
