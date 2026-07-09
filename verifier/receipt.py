@@ -144,20 +144,26 @@ def _open(ivr: dict, field: str, value: str, salt_b64: str) -> None:
 
 # ── disclosure tokens (SD-JWT VC) ──────────────────────────────────────────
 
-def _evidence(ivr: dict) -> dict:
-    return {
+def _evidence(ivr: dict, voucher_jti: str | None = None) -> dict:
+    ev = {
         "ivr": ivr["jti"],
         "doc_type": ivr["doc"]["doc_type"],
         "issuing_state": ivr["doc"]["issuing_state"],
         "verified_at": ivr["iat"],
         "measurement": ivr.get("measurement", ""),
     }
+    # The paid-disclosure settlement handle: lets an auditor tie THIS receipt
+    # to the reserved/settled ledger row without any Privasys lookup service.
+    if voucher_jti:
+        ev["voucher"] = voucher_jti
+    return ev
 
 
 def _token(key: crypto.SigningKey, ivr: dict, sub: str, rp_id: str,
            claim: str, value, iss: str | None = None,
            holder_pub_raw: bytes | None = None,
-           extra_evidence: dict | None = None) -> str:
+           extra_evidence: dict | None = None,
+           voucher_jti: str | None = None) -> str:
     """Mint one disclosure as an SD-JWT VC (draft-ietf-oauth-sd-jwt-vc).
 
     Every claim is plainly disclosed (each token carries exactly the one value
@@ -168,7 +174,7 @@ def _token(key: crypto.SigningKey, ivr: dict, sub: str, rp_id: str,
     presentation time.
     """
     now = _now()
-    evidence = _evidence(ivr)
+    evidence = _evidence(ivr, voucher_jti)
     if extra_evidence:
         evidence.update(extra_evidence)
     payload = {
@@ -210,11 +216,11 @@ def _age_from(birthdate: str) -> int:
 
 
 def prove_age_over(key, ivr, sub, rp_id, birthdate, salt_b64, threshold,
-                   iss=None, holder_pub_raw=None) -> str:
+                   iss=None, holder_pub_raw=None, voucher_jti=None) -> str:
     _open(ivr, "birthdate", birthdate, salt_b64)
     over = _age_from(birthdate) >= int(threshold)
     return _token(key, ivr, sub, rp_id, f"age_over_{int(threshold)}", over,
-                  iss, holder_pub_raw)
+                  iss, holder_pub_raw, voucher_jti=voucher_jti)
 
 
 # Default age bands (lower-inclusive). Override per request if needed.
@@ -232,27 +238,31 @@ def _band_label(age: int, bounds) -> str:
 
 
 def prove_age_band(key, ivr, sub, rp_id, birthdate, salt_b64, bands=None,
-                   iss=None, holder_pub_raw=None) -> str:
+                   iss=None, holder_pub_raw=None, voucher_jti=None) -> str:
     _open(ivr, "birthdate", birthdate, salt_b64)
     label = _band_label(_age_from(birthdate), bands or DEFAULT_BANDS)
-    return _token(key, ivr, sub, rp_id, "age_band", label, iss, holder_pub_raw)
+    return _token(key, ivr, sub, rp_id, "age_band", label, iss, holder_pub_raw,
+                  voucher_jti=voucher_jti)
 
 
 def prove_field(key, ivr, sub, rp_id, field, value, salt_b64,
-                iss=None, holder_pub_raw=None) -> str:
+                iss=None, holder_pub_raw=None, voucher_jti=None) -> str:
     if field not in config.CERTIFIED_FIELDS:
         raise ValueError(f"{field!r} is not a certified field")
     _open(ivr, field, value, salt_b64)
-    return _token(key, ivr, sub, rp_id, field, value, iss, holder_pub_raw)
+    return _token(key, ivr, sub, rp_id, field, value, iss, holder_pub_raw,
+                  voucher_jti=voucher_jti)
 
 
-def prove_document_valid(key, ivr, sub, rp_id, iss=None, holder_pub_raw=None) -> str:
+def prove_document_valid(key, ivr, sub, rp_id, iss=None, holder_pub_raw=None,
+                         voucher_jti=None) -> str:
     # No field disclosed — only that a genuine government document was verified.
-    return _token(key, ivr, sub, rp_id, "document_valid", True, iss, holder_pub_raw)
+    return _token(key, ivr, sub, rp_id, "document_valid", True, iss, holder_pub_raw,
+                  voucher_jti=voucher_jti)
 
 
 def prove_presence(key, ivr, sub, rp_id, dg2_b64u, salt_b64, bio,
-                   iss=None, holder_pub_raw=None) -> str:
+                   iss=None, holder_pub_raw=None, voucher_jti=None) -> str:
     """Fresh-presence disclosure: the DOCUMENT HOLDER is physically present now.
 
     Platform biometrics (FaceID et al.) prove only "someone enrolled on this
@@ -273,4 +283,5 @@ def prove_presence(key, ivr, sub, rp_id, dg2_b64u, salt_b64, bio,
             "liveness_score": round(bio.liveness_score, 4),
             "checked_at": _now(),
         }},
+        voucher_jti=voucher_jti,
     )

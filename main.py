@@ -374,7 +374,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             _b64u_field(body, "holder_sig"),
         )
         iss = config.issuer(self.headers.get("Host"))
-        token = fn(ivr, sub, rp_id, body, iss, holder_pub)
+        token = fn(ivr, sub, rp_id, body, iss, holder_pub, jti or None)
         resp = {"token": token}
         if jti:
             # Echo the settlement handle so the disclosure is auditable against
@@ -415,32 +415,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise VerificationError("a paid disclosure voucher is required for this relying party")
         return ""
 
-    def _do_age_over(self, ivr, sub, rp_id, body, iss, holder_pub) -> str:
+    def _do_age_over(self, ivr, sub, rp_id, body, iss, holder_pub, jti=None) -> str:
         return receipt.prove_age_over(
             _SIGNING_KEY, ivr, sub, rp_id,
             _require(body, "birthdate"), _require(body, "salt"),
-            _require(body, "threshold"), iss, holder_pub,
+            _require(body, "threshold"), iss, holder_pub, voucher_jti=jti,
         )
 
-    def _do_age_band(self, ivr, sub, rp_id, body, iss, holder_pub) -> str:
+    def _do_age_band(self, ivr, sub, rp_id, body, iss, holder_pub, jti=None) -> str:
         return receipt.prove_age_band(
             _SIGNING_KEY, ivr, sub, rp_id,
             _require(body, "birthdate"), _require(body, "salt"),
-            body.get("bands"), iss, holder_pub,
+            body.get("bands"), iss, holder_pub, voucher_jti=jti,
         )
 
-    def _do_field(self, ivr, sub, rp_id, body, iss, holder_pub) -> str:
+    def _do_field(self, ivr, sub, rp_id, body, iss, holder_pub, jti=None) -> str:
         return receipt.prove_field(
             _SIGNING_KEY, ivr, sub, rp_id,
             _require(body, "field"), _require(body, "value"), _require(body, "salt"),
-            iss, holder_pub,
+            iss, holder_pub, voucher_jti=jti,
         )
 
-    def _do_document_valid(self, ivr, sub, rp_id, body, iss, holder_pub) -> str:
+    def _do_document_valid(self, ivr, sub, rp_id, body, iss, holder_pub, jti=None) -> str:
         return receipt.prove_document_valid(_SIGNING_KEY, ivr, sub, rp_id,
-                                            iss, holder_pub)
+                                            iss, holder_pub, voucher_jti=jti)
 
-    def _do_presence(self, ivr, sub, rp_id, body, iss, holder_pub) -> str:
+    def _do_presence(self, ivr, sub, rp_id, body, iss, holder_pub, jti=None) -> str:
         """Fresh holder presence: selfie + liveness against the committed DG2
         portrait. `dg2` is the b64url portrait exactly as committed at verify
         time; `selfie` is a standard-base64 fresh capture. Fail closed — a
@@ -459,6 +459,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise VerificationError(str(exc)) from exc
         return receipt.prove_presence(
             _SIGNING_KEY, ivr, sub, rp_id, dg2_b64u, salt, bio, iss, holder_pub,
+            voucher_jti=jti,
         )
 
     def log_message(self, fmt: str, *args: object) -> None:  # noqa: A002
