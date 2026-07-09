@@ -134,12 +134,29 @@ def check_holder(
         raise ValueError("bad holder signature")
 
 
+class CeremonyFailure(ValueError):
+    """An ESTABLISHED ceremony ran and failed (vs a malformed request that
+    never ran). The runtime CHARGES for it: main returns 200 with a signed
+    failure receipt so the voucher settles — the enclave did its work and a
+    free failure path would make brute-forcing free. `retryable` is the ONLY
+    detail exposed to the relying party (a stage taxonomy would teach an
+    attacker which gate caught them)."""
+
+    def __init__(self, msg: str, retryable: bool):
+        super().__init__(msg)
+        self.retryable = retryable
+
+
 def _open(ivr: dict, field: str, value: str, salt_b64: str) -> None:
+    # Both cases: the ceremony was established but the supplied data cannot
+    # open the certified commitment — charged, and retrying the same data
+    # cannot succeed (a stale/foreign IVR needs a re-verification first).
     commitment = ivr.get("commitments", {}).get(field)
     if not commitment:
-        raise ValueError(f"IVR has no commitment for {field!r}")
+        raise CeremonyFailure(f"IVR has no commitment for {field!r}", retryable=False)
     if not crypto.commit_matches(value, crypto.b64u_decode(salt_b64), commitment):
-        raise ValueError(f"value for {field!r} does not match the IVR commitment")
+        raise CeremonyFailure(f"value for {field!r} does not match the IVR commitment",
+                              retryable=False)
 
 
 # ── disclosure tokens (SD-JWT VC) ──────────────────────────────────────────
@@ -163,7 +180,8 @@ def _token(key: crypto.SigningKey, ivr: dict, sub: str, rp_id: str,
            claim: str, value, iss: str | None = None,
            holder_pub_raw: bytes | None = None,
            extra_evidence: dict | None = None,
-           voucher_jti: str | None = None) -> str:
+           voucher_jti: str | None = None,
+           failure: dict | None = None) -> str:
     """Mint one disclosure as an SD-JWT VC (draft-ietf-oauth-sd-jwt-vc).
 
     Every claim is plainly disclosed (each token carries exactly the one value
@@ -189,9 +207,22 @@ def _token(key: crypto.SigningKey, ivr: dict, sub: str, rp_id: str,
         "iat": now,
         "exp": now + config.TOKEN_TTL_SECONDS,
     }
+    if failure is not None:
+        payload["failure"] = failure
     if holder_pub_raw:
         payload["cnf"] = {"jwk": crypto.PublicKey.from_raw(holder_pub_raw).jwk_public()}
     return crypto.jws_sign(payload, key, config.DISCLOSURE_TYP) + "~"
+
+
+def failure_token(key, ivr, sub, rp_id, claim, retryable: bool,
+                  iss=None, holder_pub_raw=None, voucher_jti=None) -> str:
+    """Signed failure receipt for a CHARGED ceremony that did not pass:
+    `value: false` plus `failure.retryable` — and nothing else. The relying
+    party paid for the answer and the answer is sometimes no; which internal
+    gate failed stays our business."""
+    return _token(key, ivr, sub, rp_id, claim, False, iss, holder_pub_raw,
+                  voucher_jti=voucher_jti,
+                  failure={"retryable": bool(retryable)})
 
 
 def verify_disclosure(sd_jwt: str, pub: crypto.PublicKey) -> dict:
@@ -275,7 +306,11 @@ def prove_presence(key, ivr, sub, rp_id, dg2_b64u, salt_b64, bio,
     """
     _open(ivr, PORTRAIT_FIELD, dg2_b64u, salt_b64)
     if not bio.face_match:
-        raise ValueError("the live face does not match the document portrait")
+        # Charged, retryable: a genuine holder can fail a match on a bad
+        # capture (angle, light) — and every retry is a fresh paid ceremony,
+        # so volume is the attacker's cost, not ours.
+        raise CeremonyFailure("the live face does not match the document portrait",
+                              retryable=True)
     return _token(
         key, ivr, sub, rp_id, "holder_present", True, iss, holder_pub_raw,
         extra_evidence={"presence": {

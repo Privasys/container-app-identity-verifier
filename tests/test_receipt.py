@@ -209,3 +209,33 @@ def test_portrait_is_not_a_certifiable_text_field():
         receipt.prove_field(
             vkey, ivr, "s", "rp", receipt.PORTRAIT_FIELD,
             crypto.b64u_encode(_DG2), salts[receipt.PORTRAIT_FIELD])
+
+
+# ── charged-failure receipts (retryable flag only, no stage detail) ─────────
+
+def test_failure_receipt_shape():
+    vkey, holder_pub, ivr, salts = _setup_with_portrait()
+    tok = receipt.failure_token(vkey, ivr, "s", "rp", "holder_present", True,
+                                "https://v.example", holder_pub, "jti-1")
+    p = receipt.verify_disclosure(tok, vkey.public())
+    assert p["claim"] == "holder_present" and p["value"] is False
+    assert p["failure"] == {"retryable": True}
+    assert p["evidence"]["voucher"] == "jti-1"
+    assert "stage" not in str(p.get("failure"))
+
+
+def test_face_mismatch_is_retryable_ceremony_failure():
+    vkey, holder_pub, ivr, salts = _setup_with_portrait()
+    with pytest.raises(receipt.CeremonyFailure) as ei:
+        receipt.prove_presence(vkey, ivr, "s", "rp",
+                               crypto.b64u_encode(_DG2), salts[receipt.PORTRAIT_FIELD],
+                               BioResult(False, 0.99))
+    assert ei.value.retryable is True
+
+
+def test_commitment_mismatch_is_nonretryable_ceremony_failure():
+    vkey, holder, holder_pub, ivr, salts = _setup()
+    with pytest.raises(receipt.CeremonyFailure) as ei:
+        receipt.prove_age_over(vkey, ivr, "s", "rp", "1990-01-01",
+                               salts["birthdate"], 18)
+    assert ei.value.retryable is False

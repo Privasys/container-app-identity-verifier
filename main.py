@@ -365,22 +365,42 @@ class Handler(http.server.BaseHTTPRequestHandler):
         holder_pub = _b64u_field(body, "holder_pub")
         self._enforce_wia(body, holder_pub)
         jti = self._voucher_gate(path, body, rp_id)
-        receipt.check_holder(
-            ivr,
-            holder_pub,
-            rp_id,
-            _require(body, "nonce"),
-            int(_require(body, "ts")),
-            _b64u_field(body, "holder_sig"),
-        )
+        nonce = _require(body, "nonce")
+        ts = int(_require(body, "ts"))
+        holder_sig = _b64u_field(body, "holder_sig")
         iss = config.issuer(self.headers.get("Host"))
-        token = fn(ivr, sub, rp_id, body, iss, holder_pub, jti or None)
+
+        # Everything ABOVE raises → 4xx → the runtime RELEASES the voucher:
+        # the ceremony never ran (malformed request, uncovered claim, invalid
+        # IVR). From HERE the ceremony is ESTABLISHED and the work is CHARGED:
+        # pass or fail we return 200 (→ settle). A failed gate mints a SIGNED
+        # failure receipt carrying only `failure.retryable` — the enclave did
+        # its job, and a free failure path would make brute-forcing free.
+        claim = self._claim_for(path, body)
+        token: str
+        try:
+            receipt.check_holder(ivr, holder_pub, rp_id, nonce, ts, holder_sig)
+            token = fn(ivr, sub, rp_id, body, iss, holder_pub, jti or None)
+        except receipt.CeremonyFailure as cf:
+            token = receipt.failure_token(_SIGNING_KEY, ivr, sub, rp_id, claim,
+                                          cf.retryable, iss, holder_pub, jti or None)
+        except ValueError:
+            # Holder-binding / freshness failures (check_holder): an attack
+            # signal, never user-retryable — and deliberately indistinct.
+            token = receipt.failure_token(_SIGNING_KEY, ivr, sub, rp_id, claim,
+                                          False, iss, holder_pub, jti or None)
         resp = {"token": token}
         if jti:
             # Echo the settlement handle so the disclosure is auditable against
             # the reservation the runtime settles.
             resp["voucher_jti"] = jti
         self._json(200, resp)
+
+    def _claim_for(self, path: str, body: dict) -> str:
+        """The claim name a derivation discloses (failure receipts need it
+        before the derivation runs)."""
+        key = self._attr_key_for(path, body)
+        return key.removeprefix("privasys:") if key else "unknown"
 
     def _attr_key_for(self, path: str, body: dict) -> str:
         """The marketplace attribute key a prove_* discloses, in the provider-
