@@ -15,9 +15,16 @@ import base64
 import http.client
 import json
 import os
+from urllib.parse import urlparse
 
-_HOST = "127.0.0.1"
-_PORT = 9443
+# The manager's callback URL. Since per-container network namespaces landed
+# (enclave-os-virtual #45) a container can no longer reach the manager at its
+# own 127.0.0.1 — the launcher injects PRIVASYS_MANAGER_URL pointing at the
+# bridge gateway. Fall back to the pre-#45 loopback for older runtimes.
+_MANAGER_URL = os.environ.get("PRIVASYS_MANAGER_URL", "http://127.0.0.1:9443")
+_parsed = urlparse(_MANAGER_URL)
+_HOST = _parsed.hostname or "127.0.0.1"
+_PORT = _parsed.port or 9443
 _NAME = os.environ.get("PRIVASYS_CONTAINER_NAME", "")
 _TOKEN = os.environ.get("PRIVASYS_CONTAINER_TOKEN", "")
 
