@@ -484,3 +484,45 @@ def test_wia_jwks_status_and_digest(server, monkeypatch):
     assert s["count"] == 1
     assert s["oid"] == config.WALLET_PROVIDER_JWKS_OID
     assert len(s["digest"]) == 64  # sha256 hex
+
+
+def test_configure_accepts_raw_binary_master_list(server, monkeypatch):
+    """A master list may arrive as raw bytes, not only as a base64 JSON field.
+
+    Sealed sessions carry binary bodies, so the base64 detour (a third larger,
+    and what pushed this payload past the old proxy's 1 MiB cap) is optional.
+    Both forms must produce the same anchors.
+    """
+    base = server
+    root_key, root = fixtures.self_signed_ca("Test ICAO Root")
+    monkeypatch.setattr(master_list, "ICAO_ML_ROOT_SHA256",
+                        hashlib.sha256(fixtures.cert_der(root)).hexdigest())
+    csca_key, csca = fixtures.self_signed_ca("Test CSCA")
+    ml = fixtures.build_master_list(root_key, root, root.subject, [csca])
+
+    req = urllib.request.Request(base + "/configure", data=ml, method="POST",
+                                 headers={"Content-Type": "application/pkcs7-mime"})
+    with urllib.request.urlopen(req) as resp:
+        assert resp.status == 200
+        out = json.loads(resp.read() or b"{}")
+    assert out["status"] == "configured"
+    raw_digest = out["trust_anchors_digest"]
+
+    # The base64 form of the same list yields the same anchor digest.
+    assert _req(base, "POST", "/configure", {"master_list_cms": _b64(ml)})[0] == 200
+    st, s = _req(base, "POST", "/trust-anchors/status", {})
+    assert st == 200
+    assert s["digest"] == raw_digest
+
+
+def test_configure_rejects_empty_binary_body(server, monkeypatch):
+    base = server
+    req = urllib.request.Request(base + "/configure", data=b"", method="POST",
+                                 headers={"Content-Type": "application/octet-stream"})
+    try:
+        with urllib.request.urlopen(req) as resp:
+            st, out = resp.status, json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        st, out = e.code, json.loads(e.read() or b"{}")
+    assert st == 400
+    assert "empty body" in str(out).lower()

@@ -71,6 +71,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b"{}"
         return json.loads(raw or b"{}")
 
+    def _raw_body(self) -> bytes:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        return self.rfile.read(length) if length else b""
+
+    def _binary_upload(self) -> bool:
+        """True when the caller is POSTing the payload as raw bytes.
+
+        A master list is ~865 KB of DER; base64 inflates it by a third for no
+        gain now that the call arrives over a sealed session rather than a JSON
+        control-plane proxy. Sealed envelopes carry binary bodies fine, so
+        /configure accepts either: JSON with the base64 field (what the CLI,
+        MCP and agents send) or the bytes themselves under a binary
+        Content-Type.
+        """
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        return ctype in ("application/pkcs7-mime", "application/pkcs7-signature", "application/octet-stream")
+
     def _frozen(self, path: str) -> bool:
         if path in _OPEN_PATHS:
             return False
@@ -171,11 +188,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     # ── endpoints ─────────────────────────────────────────────────────────
     def _configure(self) -> None:
-        try:
-            body = self._body()
-        except json.JSONDecodeError:
-            self._json(400, {"error": "invalid JSON body"})
-            return
+        raw_ml: bytes | None = None
+        if self._binary_upload():
+            raw_ml = self._raw_body()
+            if not raw_ml:
+                self._json(400, {"error": "empty body: send the master list bytes or JSON with master_list_cms"})
+                return
+            body: dict = {}
+        else:
+            try:
+                body = self._body()
+            except json.JSONDecodeError:
+                self._json(400, {"error": "invalid JSON body"})
+                return
         try:
             # Trust anchors are supplied ONLY as a raw ICAO CSCA Master List: the
             # verifier validates its CMS signature and that it chains to the pinned
@@ -188,11 +213,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # anchors are already in force (a restart persists both).
             ml_b64 = body.get("master_list_cms")
             wp_jwks = body.get("wallet_provider_jwks")
-            if not ml_b64 and wp_jwks is None:
+            if raw_ml is None and not ml_b64 and wp_jwks is None:
                 self._json(400, {"error": "master_list_cms (base64 ICAO CSCA Master List) is required"})
                 return
             import base64
-            if ml_b64:
+            if raw_ml is not None:
+                trust_anchors.set_anchors(master_list.verify_and_extract(raw_ml))
+            elif ml_b64:
                 trust_anchors.set_anchors(master_list.verify_and_extract(base64.b64decode(ml_b64)))
             if wp_jwks is not None:
                 wia.set_jwks(wp_jwks if isinstance(wp_jwks, dict) else json.loads(wp_jwks))
