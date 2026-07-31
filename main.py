@@ -369,7 +369,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise VerificationError("the live face does not match the document portrait")
         # Commit the DG2 portrait alongside the text fields so the wallet can
         # later prove FRESH holder presence (/prove/presence) against exactly
-        # this document's photo, without the enclave retaining it.
+        # this document's photo, and disclose the photo itself as the certified
+        # picture_id field, without the enclave retaining it.
         ivr, salts = receipt.build_ivr(
             _SIGNING_KEY, config.MEASUREMENT, doc, bio, holder_pub,
             dg2=dgs.get(2, b""),

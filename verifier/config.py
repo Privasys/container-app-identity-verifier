@@ -9,7 +9,7 @@ import os
 
 # Bumped per release so the deployed measurement (image digest at OID 3.2)
 # changes and versions are distinguishable via GET /version.
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.3"
 
 # The verifier's own measurement, stamped into every IVR so a relying party can
 # tell which audited verifier code produced a receipt. PRIVASYS_IMAGE_DIGEST is
@@ -40,8 +40,17 @@ TRUST_ANCHORS_OID = "1.3.6.1.4.1.65230.3.5.1"
 # can pin which wallet-provider keys were in force. See attribute-billing-plan §3.
 WALLET_PROVIDER_JWKS_OID = "1.3.6.1.4.1.65230.3.5.2"
 
+# Commitment key under which the DG2 portrait is disclosable as a VALUE (the
+# b64url JPEG). Distinct from receipt.PORTRAIT_FIELD, which is the separately
+# salted presence-matching commitment and stays uncertifiable. Defined here
+# because CERTIFIED_FIELDS needs it and this module cannot import receipt;
+# receipt aliases it.
+PORTRAIT_DISCLOSURE_FIELD = "picture_id"
+
 # Document fields the enclave certifies and commits to in the IVR. These map to
 # the canonical referential attributes the client auto-fills as gov-assurance.
+# Every entry is also the marketplace attribute key `privasys:<field>`, and
+# privasys.json's prove_field enum mirrors this tuple exactly.
 CERTIFIED_FIELDS = (
     "given_name",
     "family_name",
@@ -51,6 +60,10 @@ CERTIFIED_FIELDS = (
     "document_type",
     "issuing_state",
     "sex",
+    "doc_expiry",      # YYYY-MM-DD
+    "place_of_birth",  # DG11 (0x5F11), absent when the chip has no DG11
+    "personal_number", # DG11 (0x5F10), absent when the chip has no DG11
+    PORTRAIT_DISCLOSURE_FIELD,
 )
 
 # IVR lifetime (seconds). Also bounded by the document expiry. PROD: add a

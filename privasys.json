@@ -334,13 +334,17 @@
               "document_number",
               "document_type",
               "issuing_state",
-              "sex"
+              "sex",
+              "doc_expiry",
+              "place_of_birth",
+              "personal_number",
+              "picture_id"
             ],
-            "description": "Which certified document field to disclose."
+            "description": "Which certified document field to disclose. Mirrors verifier/config.py CERTIFIED_FIELDS exactly (a test asserts the two lists match). place_of_birth and personal_number need a chip carrying DG11, and picture_id is the DG2 portrait as base64url JPEG bytes; a field the document did not carry has no commitment and cannot be proved."
           },
           "value": {
             "type": "string",
-            "description": "The field's value exactly as returned in verify_identity's fields; re-hashed against the IVR commitment, so it cannot be altered."
+            "description": "The field's value exactly as returned in verify_identity's fields (for picture_id, the base64url DG2 portrait the wallet kept); re-hashed against the IVR commitment, so it cannot be altered."
           },
           "salt": {
             "type": "string",

@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from verifier import crypto, receipt
+from verifier import config, crypto, receipt
 from verifier.verification import BioResult, DocResult
 
 
@@ -16,6 +16,11 @@ def _doc():
             "family_name": "Doe",
             "birthdate": "2000-01-01",
             "nationality": "GBR",
+            # A chip that carries DG11 and an expiry: every one of these is
+            # committed by build_ivr, so every one must be provable.
+            "doc_expiry": "2030-01-01",
+            "place_of_birth": "London, GBR",
+            "personal_number": "NP123456C",
         },
         doc_type="P",
         issuing_state="GBR",
@@ -88,6 +93,19 @@ def test_age_band_and_field_and_doc_valid():
     dv = receipt.verify_disclosure(receipt.prove_document_valid(vkey, ivr, "s", "rp"),
                                    vkey.public())
     assert dv["claim"] == "document_valid" and dv["value"] is True
+
+
+def test_every_committed_document_field_is_provable():
+    # build_ivr commits every field the chip yielded, so prove_field must be
+    # able to open every one of them: a field committed but refused by
+    # prove_field is an attribute the holder can never actually disclose.
+    vkey, holder, holder_pub, ivr, salts = _setup()
+    for field, value in _doc().fields.items():
+        assert field in ivr["commitments"]
+        payload = receipt.verify_disclosure(
+            receipt.prove_field(vkey, ivr, "s", "rp", field, value, salts[field]),
+            vkey.public())
+        assert payload["claim"] == field and payload["value"] == value
 
 
 def test_wrong_salt_rejected():
@@ -203,12 +221,42 @@ def test_presence_unavailable_on_old_ivr():
 
 
 def test_portrait_is_not_a_certifiable_text_field():
-    # The photo must never be disclosable as a value via prove_field.
+    # The presence commitment is a ceremony input, never a disclosure: opening
+    # it must go through prove_presence and nothing else.
     vkey, holder_pub, ivr, salts = _setup_with_portrait()
     with pytest.raises(ValueError):
         receipt.prove_field(
             vkey, ivr, "s", "rp", receipt.PORTRAIT_FIELD,
             crypto.b64u_encode(_DG2), salts[receipt.PORTRAIT_FIELD])
+
+
+def test_portrait_is_disclosable_under_picture_id():
+    # The photo itself is certifiable through its own, separately salted
+    # commitment: a relying party can buy the government portrait as a value.
+    vkey, holder_pub, ivr, salts = _setup_with_portrait()
+    dg2_b64u = crypto.b64u_encode(_DG2)
+    assert salts[receipt.PORTRAIT_DISCLOSURE_FIELD] != salts[receipt.PORTRAIT_FIELD]
+    payload = receipt.verify_disclosure(
+        receipt.prove_field(vkey, ivr, "s", "rp", receipt.PORTRAIT_DISCLOSURE_FIELD,
+                            dg2_b64u, salts[receipt.PORTRAIT_DISCLOSURE_FIELD]),
+        vkey.public())
+    assert payload["claim"] == "picture_id" and payload["value"] == dg2_b64u
+    # The two portrait commitments stay independent: the presence salt cannot
+    # open the disclosure one.
+    with pytest.raises(ValueError):
+        receipt.prove_field(vkey, ivr, "s", "rp", receipt.PORTRAIT_DISCLOSURE_FIELD,
+                            dg2_b64u, salts[receipt.PORTRAIT_FIELD])
+
+
+def test_picture_id_unavailable_on_old_ivr():
+    # Additive to IVR v1 exactly like presence: an IVR minted without a
+    # portrait carries no picture_id commitment and fails cleanly.
+    vkey, holder, holder_pub, ivr, salts = _setup()  # no dg2
+    assert receipt.PORTRAIT_DISCLOSURE_FIELD not in salts
+    with pytest.raises(ValueError):
+        receipt.prove_field(
+            vkey, ivr, "s", "rp", receipt.PORTRAIT_DISCLOSURE_FIELD,
+            crypto.b64u_encode(_DG2), crypto.b64u_encode(crypto.new_salt()))
 
 
 # ── charged-failure receipts (retryable flag only, no stage detail) ─────────
@@ -239,3 +287,17 @@ def test_commitment_mismatch_is_nonretryable_ceremony_failure():
         receipt.prove_age_over(vkey, ivr, "s", "rp", "1990-01-01",
                                salts["birthdate"], 18)
     assert ei.value.retryable is False
+
+
+# ── manifest agreement ─────────────────────────────────────────────────────
+
+def test_prove_field_enum_matches_certified_fields():
+    # privasys.json hand-duplicates CERTIFIED_FIELDS in the prove_field enum,
+    # so drift would advertise a field the enclave refuses (or hide one it
+    # certifies) to every MCP client and to the App Store listing.
+    import json
+    from pathlib import Path
+    manifest = json.loads(
+        (Path(__file__).resolve().parent.parent / "privasys.json").read_text("utf-8"))
+    tool = next(t for t in manifest["tools"] if t["name"] == "prove_field")
+    assert tool["inputSchema"]["properties"]["field"]["enum"] == list(config.CERTIFIED_FIELDS)

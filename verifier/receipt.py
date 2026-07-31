@@ -28,12 +28,20 @@ def _now() -> int:
 # ── IVR ──────────────────────────────────────────────────────────────────
 
 # Commitment key for the DG2 portrait (bytes, committed as b64url text). NOT a
-# CERTIFIED_FIELD: the photo is never disclosable as a value via prove_field —
-# its only use is commit-and-prove for /prove/presence, where the wallet
-# re-supplies the portrait so the enclave can face-match a FRESH selfie against
-# the document the IVR certified. Additive to IVR v1: old IVRs simply have no
-# portrait commitment and cannot do presence (re-verify to enable).
+# CERTIFIED_FIELD: this commitment exists only for commit-and-prove in
+# /prove/presence, where the wallet re-supplies the portrait so the enclave can
+# face-match a FRESH selfie against the document the IVR certified. Opening it
+# is the presence ceremony, not a disclosure, so prove_field must refuse it.
+# Additive to IVR v1: old IVRs simply have no portrait commitment and cannot do
+# presence (re-verify to enable).
 PORTRAIT_FIELD = "picture_dg2"
+
+# Second commitment over the SAME portrait, separately salted, under which the
+# photo IS a certified field a relying party can buy and prove_field can open.
+# Two commitments so the disclosure never opens the presence one. The constant
+# lives in config (CERTIFIED_FIELDS needs it, and config cannot import this
+# module); aliased here so both portrait keys read side by side.
+PORTRAIT_DISCLOSURE_FIELD = config.PORTRAIT_DISCLOSURE_FIELD
 
 
 def build_ivr(
@@ -57,10 +65,17 @@ def build_ivr(
     if dg2:
         # Commit the portrait as its b64url encoding so the text commit()
         # primitive applies unchanged; the wallet re-derives the identical
-        # string from its stored DG2 bytes at presence time.
-        salt = crypto.new_salt()
-        salts[PORTRAIT_FIELD] = crypto.b64u_encode(salt)
-        commitments[PORTRAIT_FIELD] = crypto.commit(crypto.b64u_encode(dg2), salt)
+        # string from its stored DG2 bytes at presence and disclosure time.
+        # Twice, under independent salts: the presence commitment and the
+        # disclosable one. Both are 32-byte hashes, so the second is cheap.
+        # Additive to IVR v1 like the first: an IVR minted before this has no
+        # picture_id commitment and prove_field fails on it the way presence
+        # already fails on a pre-portrait IVR.
+        dg2_b64u = crypto.b64u_encode(dg2)
+        for portrait_field in (PORTRAIT_FIELD, PORTRAIT_DISCLOSURE_FIELD):
+            salt = crypto.new_salt()
+            salts[portrait_field] = crypto.b64u_encode(salt)
+            commitments[portrait_field] = crypto.commit(dg2_b64u, salt)
 
     now = _now()
     payload = {
