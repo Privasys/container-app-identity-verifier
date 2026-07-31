@@ -83,6 +83,13 @@
       "name": "verify_identity",
       "title": "Verify passport + holder (issue IVR)",
       "endpoint": "/verify-identity",
+      "x-privasys": {
+        "price": {
+          "credits": 100000,
+          "payer": "caller",
+          "free_for": ["wallet"]
+        }
+      },
       "description": "The one heavy verification: authenticate an eMRTD chip read (ICAO 9303 Passive Authentication against the loaded CSCA anchors, plus Active Authentication when DG15 is present) and check the holder's live selfie against the chip portrait (face match + liveness). Fails closed on an expired document, an untrusted chain, a cloned chip, or a face mismatch. On success returns {ivr, salts, fields, viz_match}: ivr is the signed Identity Verification Receipt (per-field SHA-256 commitments, validity results, holder binding, enclave measurement); salts and fields stay with the client so later prove_* calls can re-open exactly one commitment. Raw document and biometric data are processed in memory and never stored.",
       "inputSchema": {
         "type": "object",
