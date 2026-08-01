@@ -52,7 +52,14 @@
       "name": "read_mrz",
       "title": "Read data-page MRZ (pre-NFC)",
       "endpoint": "/read-mrz",
-      "description": "OCR a passport data-page photo inside the enclave and return the three BAC/PACE chip-access fields: document_number, date_of_birth and date_of_expiry (raw YYMMDD MRZ form, check-digit validated), plus is_screenshot (replay heuristic). Use this before the NFC read: the fields derive the key that unlocks the chip. Returns HTTP 422 when no check-digit-valid MRZ can be read (retake the photo). The image is processed in memory for this call only; nothing is persisted.",
+      "description": "OCR a passport data-page photo inside the enclave and return the three BAC/PACE chip-access fields: document_number, date_of_birth and date_of_expiry (raw YYMMDD MRZ form, check-digit validated), plus is_screenshot (replay heuristic). Use this before the NFC read: the fields derive the key that unlocks the chip. Returns HTTP 422 when no check-digit-valid MRZ can be read (retake the photo). The image is processed in memory for this call only; nothing is persisted. Requires a Wallet Instance Attestation, like verify_identity: the enclave document reader is not an open OCR service.",
+      "x-privasys": {
+        "price": {
+          "credits": 100000,
+          "payer": "caller",
+          "free_for": ["wallet"]
+        }
+      },
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -62,10 +69,20 @@
             "x-privasys": {
               "label": "Data-page photo (base64)"
             }
+          },
+          "holder_pub": {
+            "type": "string",
+            "description": "Holder hardware public key (base64url, uncompressed SEC1 P-256). Only used to bind the WIA's cnf.jwk on this call; the IVR binding happens later at verify_identity."
+          },
+          "wia": {
+            "type": "string",
+            "description": "Wallet Instance Attestation (wia+jwt) proving the call comes from a genuine wallet instance holding holder_pub. Required when the deployment enforces WIA (production default)."
           }
         },
         "required": [
-          "doc_image"
+          "doc_image",
+          "holder_pub",
+          "wia"
         ]
       }
     },

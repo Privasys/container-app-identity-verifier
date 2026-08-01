@@ -400,6 +400,46 @@ def test_wia_required_rejects_missing(server, monkeypatch):
     assert "wallet instance attestation" in str(out).lower()
 
 
+def test_read_mrz_wia_gate(server, monkeypatch):
+    # /read-mrz is WIA-gated like verify_identity (the enclave OCR is
+    # wallet-only, not an open document-reading API). The gate runs BEFORE any
+    # OCR, so no PaddleOCR is needed to prove it: a missing WIA is refused up
+    # front, and a valid holder-bound WIA reaches the (stubbed) OCR.
+    import sys
+    import types
+    import verifier as verifier_pkg
+    base = server
+    monkeypatch.setattr(config, "REQUIRE_WIA", True)
+    _sod, _dg1, signer = _configure_for_wia(base, monkeypatch)
+
+    # No WIA → refused before the image is even decoded.
+    st, out = _req(base, "POST", "/read-mrz", {"doc_image": _b64(b"not-an-image")})
+    assert st == 400
+    assert "wallet instance attestation" in str(out).lower()
+
+    # Valid WIA bound to the holder key → passes the gate; the OCR itself is
+    # stubbed (module injected before the handler's lazy import) so the test
+    # exercises the gate + MRZ parsing, not PaddleOCR. The fixture MRZ carries
+    # placeholder check digits, so recompute real ones for the access fields.
+    from verifier.mrz import _check_digit
+    l2 = ("123456789" + _check_digit("123456789") + "GBR"
+          + "000101" + _check_digit("000101") + "F"
+          + "300101" + _check_digit("300101") + "<" * 14 + "0" + "0")
+    valid_mrz = fixtures.SAMPLE_MRZ[:44] + l2
+    stub = types.SimpleNamespace(read_mrz=lambda raw: {"mrz": valid_mrz, "is_screenshot": False})
+    monkeypatch.setitem(sys.modules, "verifier.doc_ocr", stub)
+    monkeypatch.setattr(verifier_pkg, "doc_ocr", stub, raising=False)
+    holder = crypto.SigningKey.generate()
+    holder_pub = holder.public().raw()
+    st, out = _req(base, "POST", "/read-mrz", {
+        "doc_image": _b64(b"not-an-image"),
+        "holder_pub": crypto.b64u_encode(holder_pub),
+        "wia": _build_wia(signer, holder_pub),
+    })
+    assert st == 200, out
+    assert out["document_number"]
+
+
 def test_wia_valid_accepted_when_required(server, monkeypatch):
     base = server
     monkeypatch.setattr(config, "MEASUREMENT", "test-image-digest")

@@ -252,7 +252,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         BAC/PACE access-key fields (document number + birth/expiry dates). The
         on-device OCR is unreliable on the OCR-B MRZ, so the wallet unlocks the
         chip with this enclave-grade read instead. Raw image stays only for this
-        RA-TLS hop; nothing is persisted."""
+        RA-TLS hop; nothing is persisted.
+
+        WIA-gated like verify_identity (Bertrand, 2026-08-01): the enclave OCR
+        is wallet-only — without the gate this is a free document-reading API
+        for anyone. The holder key rides along solely to bind the WIA's
+        cnf.jwk; nothing else here uses it. When enforcement is relaxed
+        (REQUIRE_WIA=false, dev/tests) a WIA-less call still passes and
+        holder_pub stays optional, so pre-gate clients keep working there."""
+        if body.get("wia"):
+            self._enforce_wia(body, _b64u_field(body, "holder_pub"))
+        elif config.REQUIRE_WIA:
+            raise VerificationError("a Wallet Instance Attestation is required")
         from verifier import doc_ocr  # lazy: keep PaddleOCR off the startup path
         image = body.get("doc_image")
         if not isinstance(image, str) or not image:
