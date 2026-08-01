@@ -81,3 +81,21 @@ def set_anchors(pem: bytes, *, push_oid: bool = True) -> str:
     if push_oid and manager.available():
         manager.set_attestation_extension(config.TRUST_ANCHORS_OID, d)
     return d.hex()
+
+
+def republish_oid() -> bool:
+    """Re-publish the persisted anchor set's digest as the attested OID.
+
+    The extension lives only in the manager's leaf-cert state, which every
+    container (re)start discards — nothing platform-side replays it (the
+    container-load envelope dropped per-app extensions by design). Without
+    this, a restarted verifier keeps serving the anchors while its cert stops
+    attesting WHICH set is in force (observed in prod 2026-08-01). Returns
+    False when nothing is persisted or the manager is unreachable — non-fatal
+    either way, the next /configure republishes.
+    """
+    pem = load()
+    if not pem or not manager.available():
+        return False
+    manager.set_attestation_extension(config.TRUST_ANCHORS_OID, _digest(pem))
+    return True

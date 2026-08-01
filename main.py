@@ -524,7 +524,8 @@ if __name__ == "__main__":
     if trust_anchors.load():
         _CONFIGURED = True
         print(f"identity-verifier: resuming with persisted trust anchors "
-              f"({trust_anchors.count()} CSCA, digest={trust_anchors.digest_hex()[:12]})")
+              f"({trust_anchors.count()} CSCA, digest={trust_anchors.digest_hex()[:12]})",
+              flush=True)
         # Self-recover the manager-level freeze gate too: it re-arms in memory
         # on every restart, so without this a redeploy stays 503 at the routing
         # layer until an owner re-sends /configure (the kmip-gateway pattern).
@@ -532,7 +533,19 @@ if __name__ == "__main__":
             try:
                 manager.config_complete()
             except Exception as exc:  # noqa: BLE001 — non-fatal, owner can re-configure
-                print(f"identity-verifier: config-complete self-recovery failed: {exc}")
+                print(f"identity-verifier: config-complete self-recovery failed: {exc}",
+                      flush=True)
+            # The attested runtime OIDs (anchor-set digest, WIA JWKS digest)
+            # live only in the manager's leaf-cert state, which a restart
+            # discards and nothing platform-side replays — republish them with
+            # the freeze lift, or a restarted verifier serves anchors its cert
+            # no longer attests (prod, 2026-08-01).
+            try:
+                trust_anchors.republish_oid()
+                wia.republish_oid()
+            except Exception as exc:  # noqa: BLE001 — non-fatal, /configure republishes
+                print(f"identity-verifier: attested-OID republish failed: {exc}",
+                      flush=True)
 
     # The platform allocates a unique host port per app and passes it as $PORT
     # (host networking -> listen port == host port; see management-service

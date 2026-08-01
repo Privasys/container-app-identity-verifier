@@ -99,6 +99,18 @@ def set_jwks(doc: dict, *, push_oid: bool = True) -> str:
     return d.hex()
 
 
+def republish_oid() -> bool:
+    """Re-publish the persisted JWKS digest as the attested OID after a
+    restart — same rationale as trust_anchors.republish_oid(): the extension
+    lives only in the manager's leaf state and nothing replays it."""
+    raw = load()
+    if not raw or not manager.available():
+        return False
+    manager.set_attestation_extension(
+        config.WALLET_PROVIDER_JWKS_OID, hashlib.sha256(raw).digest())
+    return True
+
+
 def verify_wia(token: str, holder_pub_raw: bytes) -> dict:
     """Verify a Wallet Instance Attestation and return its claims. The WIA must:
       - be signed by a provisioned wallet-provider key (ES256, kid-selected),
