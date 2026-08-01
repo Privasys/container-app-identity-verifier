@@ -566,3 +566,17 @@ def test_configure_rejects_empty_binary_body(server, monkeypatch):
         st, out = e.code, json.loads(e.read() or b"{}")
     assert st == 400
     assert "empty body" in str(out).lower()
+
+
+def test_manifest_served_with_fill_markers(server):
+    # The app serves its own (image-baked) manifest over the attested channel so
+    # a client learns which fields carry platform credentials without hard-coding
+    # a per-endpoint list. Open before configure: it is public tool metadata.
+    st, m = _req(server, "GET", "/.well-known/privasys-manifest")
+    assert st == 200, m
+    tools = {t["name"]: t for t in m["tools"]}
+    for name in ("read_mrz", "verify_identity", "prove_age_over"):
+        props = tools[name]["inputSchema"]["properties"]
+        assert props["wia"]["x-privasys"]["fill"] == "wallet_instance_attestation"
+        assert props["holder_pub"]["x-privasys"]["fill"] == "holder_public_key"
+        assert "wia" in tools[name]["inputSchema"]["required"]

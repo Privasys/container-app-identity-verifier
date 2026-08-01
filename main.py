@@ -32,7 +32,23 @@ _CONFIGURED = False
 _SIGNING_KEY = crypto.SigningKey.load()
 
 _OPEN_PATHS = ("/health", "/version", "/.well-known/jwks.json",
-               "/.well-known/jwt-vc-issuer")
+               "/.well-known/jwt-vc-issuer", "/.well-known/privasys-manifest")
+
+# The app's own manifest, baked into the measured image. Served so a client can
+# read the tool contract — notably which fields carry platform credentials
+# (x-privasys.fill) — over the attested RA-TLS channel rather than trusting the
+# control plane's copy of it. Read once at import; absent in a source checkout
+# that predates the Dockerfile COPY, in which case the endpoint 404s.
+def _load_manifest() -> dict | None:
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "privasys.json"),
+                  encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+_MANIFEST = _load_manifest()
 
 # Trusted headers the enclave runtime injects after it has verified a relying
 # party's disclosure voucher (it strips any client-supplied copy first, so these
@@ -107,6 +123,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/.well-known/jwks.json":
             pub = _SIGNING_KEY.public()
             self._json(200, {"keys": [pub.jwk(_SIGNING_KEY.kid)]})
+        elif path == "/.well-known/privasys-manifest":
+            if _MANIFEST is None:
+                self._json(404, {"error": "manifest not bundled in this build"})
+            else:
+                self._json(200, _MANIFEST)
         elif path == "/.well-known/jwt-vc-issuer":
             # SD-JWT VC issuer metadata (draft-ietf-oauth-sd-jwt-vc): relying
             # parties resolve the disclosure-token `iss` here to get the keys.

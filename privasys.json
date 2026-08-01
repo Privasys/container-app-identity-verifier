@@ -57,7 +57,9 @@
         "price": {
           "credits": 100000,
           "payer": "caller",
-          "free_for": ["wallet"]
+          "free_for": [
+            "wallet"
+          ]
         }
       },
       "inputSchema": {
@@ -72,11 +74,17 @@
           },
           "holder_pub": {
             "type": "string",
-            "description": "Holder hardware public key (base64url, uncompressed SEC1 P-256). Only used to bind the WIA's cnf.jwk on this call; the IVR binding happens later at verify_identity."
+            "description": "Holder hardware public key (base64url, uncompressed SEC1 P-256). Only used to bind the WIA's cnf.jwk on this call; the IVR binding happens later at verify_identity.",
+            "x-privasys": {
+              "fill": "holder_public_key"
+            }
           },
           "wia": {
             "type": "string",
-            "description": "Wallet Instance Attestation (wia+jwt) proving the call comes from a genuine wallet instance holding holder_pub. Required when the deployment enforces WIA (production default)."
+            "description": "Wallet Instance Attestation (wia+jwt) proving the call comes from a genuine wallet instance holding holder_pub. Required when the deployment enforces WIA (production default).",
+            "x-privasys": {
+              "fill": "wallet_instance_attestation"
+            }
           }
         },
         "required": [
@@ -104,7 +112,9 @@
         "price": {
           "credits": 100000,
           "payer": "caller",
-          "free_for": ["wallet"]
+          "free_for": [
+            "wallet"
+          ]
         }
       },
       "description": "The one heavy verification: authenticate an eMRTD chip read (ICAO 9303 Passive Authentication against the loaded CSCA anchors, plus Active Authentication when DG15 is present) and check the holder's live selfie against the chip portrait (face match + liveness). Fails closed on an expired document, an untrusted chain, a cloned chip, or a face mismatch. On success returns {ivr, salts, fields, viz_match}: ivr is the signed Identity Verification Receipt (per-field SHA-256 commitments, validity results, holder binding, enclave measurement); salts and fields stay with the client so later prove_* calls can re-open exactly one commitment. Raw document and biometric data are processed in memory and never stored.",
@@ -115,7 +125,8 @@
             "type": "string",
             "description": "Holder hardware public key: base64url, uncompressed SEC1 P-256 point (0x04 || X || Y). The IVR binds to SHA-256 of this key, so disclosures can only be derived by this device.",
             "x-privasys": {
-              "label": "Holder public key (base64url SEC1 P-256)"
+              "label": "Holder public key (base64url SEC1 P-256)",
+              "fill": "holder_public_key"
             }
           },
           "sod": {
@@ -155,12 +166,20 @@
           "doc_image": {
             "type": "string",
             "description": "Optional data-page photo (base64). When supplied, the enclave OCRs the visual MRZ and cross-references it against the authenticated chip DG1 (GPG45 box 3); the result is recorded as viz_match (fraud signal, not a hard gate)."
+          },
+          "wia": {
+            "type": "string",
+            "description": "Wallet Instance Attestation (wia+jwt) proving the call comes from a genuine wallet instance holding holder_pub. Required when the deployment enforces WIA (production default).",
+            "x-privasys": {
+              "fill": "wallet_instance_attestation"
+            }
           }
         },
         "required": [
           "holder_pub",
           "sod",
-          "data_groups"
+          "data_groups",
+          "wia"
         ]
       }
     },
@@ -194,7 +213,10 @@
           },
           "holder_pub": {
             "type": "string",
-            "description": "Holder hardware public key (base64url SEC1 P-256); must hash to the IVR's holder_binding."
+            "description": "Holder hardware public key (base64url SEC1 P-256); must hash to the IVR's holder_binding.",
+            "x-privasys": {
+              "fill": "holder_public_key"
+            }
           },
           "holder_sig": {
             "type": "string",
@@ -214,6 +236,13 @@
             "minimum": 1,
             "maximum": 150,
             "description": "Age threshold N in years, e.g. 18. The token asserts age_over_N = true/false."
+          },
+          "wia": {
+            "type": "string",
+            "description": "Wallet Instance Attestation (wia+jwt) proving the call comes from a genuine wallet instance holding holder_pub. Required when the deployment enforces WIA (production default).",
+            "x-privasys": {
+              "fill": "wallet_instance_attestation"
+            }
           }
         },
         "required": [
@@ -226,7 +255,8 @@
           "holder_sig",
           "birthdate",
           "salt",
-          "threshold"
+          "threshold",
+          "wia"
         ]
       }
     },
@@ -260,7 +290,10 @@
           },
           "holder_pub": {
             "type": "string",
-            "description": "Holder hardware public key (base64url SEC1 P-256)."
+            "description": "Holder hardware public key (base64url SEC1 P-256).",
+            "x-privasys": {
+              "fill": "holder_public_key"
+            }
           },
           "holder_sig": {
             "type": "string",
@@ -290,6 +323,13 @@
               65
             ],
             "description": "Optional lower-inclusive band boundaries in years, e.g. [0, 18, 65] yields bands 0-17, 18-64, 65+."
+          },
+          "wia": {
+            "type": "string",
+            "description": "Wallet Instance Attestation (wia+jwt) proving the call comes from a genuine wallet instance holding holder_pub. Required when the deployment enforces WIA (production default).",
+            "x-privasys": {
+              "fill": "wallet_instance_attestation"
+            }
           }
         },
         "required": [
@@ -301,7 +341,8 @@
           "holder_pub",
           "holder_sig",
           "birthdate",
-          "salt"
+          "salt",
+          "wia"
         ]
       }
     },
@@ -335,7 +376,10 @@
           },
           "holder_pub": {
             "type": "string",
-            "description": "Holder hardware public key (base64url SEC1 P-256)."
+            "description": "Holder hardware public key (base64url SEC1 P-256).",
+            "x-privasys": {
+              "fill": "holder_public_key"
+            }
           },
           "holder_sig": {
             "type": "string",
@@ -366,6 +410,13 @@
           "salt": {
             "type": "string",
             "description": "base64url salt for this field's commitment, from verify_identity's salts."
+          },
+          "wia": {
+            "type": "string",
+            "description": "Wallet Instance Attestation (wia+jwt) proving the call comes from a genuine wallet instance holding holder_pub. Required when the deployment enforces WIA (production default).",
+            "x-privasys": {
+              "fill": "wallet_instance_attestation"
+            }
           }
         },
         "required": [
@@ -378,7 +429,8 @@
           "holder_sig",
           "field",
           "value",
-          "salt"
+          "salt",
+          "wia"
         ]
       }
     },
@@ -412,11 +464,21 @@
           },
           "holder_pub": {
             "type": "string",
-            "description": "Holder hardware public key (base64url SEC1 P-256)."
+            "description": "Holder hardware public key (base64url SEC1 P-256).",
+            "x-privasys": {
+              "fill": "holder_public_key"
+            }
           },
           "holder_sig": {
             "type": "string",
             "description": "base64url holder signature over canonical JSON {ivr: <jti>, nonce, rp_id, ts}."
+          },
+          "wia": {
+            "type": "string",
+            "description": "Wallet Instance Attestation (wia+jwt) proving the call comes from a genuine wallet instance holding holder_pub. Required when the deployment enforces WIA (production default).",
+            "x-privasys": {
+              "fill": "wallet_instance_attestation"
+            }
           }
         },
         "required": [
@@ -426,7 +488,8 @@
           "nonce",
           "ts",
           "holder_pub",
-          "holder_sig"
+          "holder_sig",
+          "wia"
         ]
       }
     },

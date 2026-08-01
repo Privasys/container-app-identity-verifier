@@ -63,6 +63,11 @@ RUN mkdir -p /models && cd /models \
 
 COPY main.py .
 COPY verifier/ verifier/
+# The app serves its own manifest (GET /.well-known/privasys-manifest) so a
+# client reads the tool contract — including which fields carry platform
+# credentials (x-privasys.fill) — over the ATTESTED channel, not from the
+# control plane's copy. Baked in, so the image digest covers it.
+COPY privasys.json .
 
 # No EXPOSE: the app binds the platform-injected $PORT. Under host networking
 # EXPOSE is a no-op anyway, and there is no fixed port to advertise.
