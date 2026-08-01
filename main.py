@@ -75,6 +75,11 @@ def _require(payload: dict, name: str):
 class Handler(http.server.BaseHTTPRequestHandler):
     # ── helpers ──────────────────────────────────────────────────────────
     def _json(self, status: int, payload: dict) -> None:
+        # Drain any unread request body first: answering (and closing) with
+        # bytes still in flight makes the peer's write fail with a broken pipe,
+        # so the status below never reaches it. Bit us in production: a gate
+        # refusal of a large upload surfaced client-side as a raw socket error.
+        self._drain_body()
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -82,13 +87,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _declared_length(self) -> int:
+        try:
+            return int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            return 0
+
+    def _drain_body(self) -> None:
+        remaining = self._declared_length() - getattr(self, "_body_read", 0)
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 1 << 16))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+        self._body_read = self._declared_length()
+
     def _body(self) -> dict:
-        length = int(self.headers.get("Content-Length", "0") or 0)
+        length = self._declared_length()
         raw = self.rfile.read(length) if length else b"{}"
+        self._body_read = length
         return json.loads(raw or b"{}")
 
     def _raw_body(self) -> bytes:
-        length = int(self.headers.get("Content-Length", "0") or 0)
+        length = self._declared_length()
+        self._body_read = length
         return self.rfile.read(length) if length else b""
 
     def _binary_upload(self) -> bool:
