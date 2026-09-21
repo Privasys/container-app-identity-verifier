@@ -208,6 +208,40 @@ def test_voucher_gate_enforces_and_echoes_jti(server, monkeypatch):
     assert st == 400 and "does not authorise" in out["error"]
 
 
+def test_voucher_must_be_for_the_relying_party_being_served(server, monkeypatch):
+    """A voucher names the relying party that paid for it. The runtime cannot
+    compare that to the party being served, because it does not know which one
+    that is; we do, because it is in the request. Without the comparison a
+    voucher bought by one relying party paid for a disclosure to another."""
+    base = server
+    holder, holder_pub, ivr_jws, salts = _proven_setup(base, monkeypatch)
+    claims = "privasys:age_over_18"
+
+    # Paid for by shop.example, disclosed to shop.example.
+    st, out = _req(base, "POST", "/prove/age-over",
+                   _age_over_body(holder, holder_pub, ivr_jws, salts, rp="shop.example"),
+                   headers={"X-Privasys-Voucher-Claims": claims,
+                            "X-Privasys-Voucher-Jti": "vch-ok",
+                            "X-Privasys-Voucher-Rp-Id": "shop.example"})
+    assert st == 200, out
+
+    # Paid for by shop.example, disclosed to someone else.
+    st, out = _req(base, "POST", "/prove/age-over",
+                   _age_over_body(holder, holder_pub, ivr_jws, salts, rp="other.example"),
+                   headers={"X-Privasys-Voucher-Claims": claims,
+                            "X-Privasys-Voucher-Jti": "vch-bad",
+                            "X-Privasys-Voucher-Rp-Id": "shop.example"})
+    assert st == 400 and "another relying party" in out["error"]
+
+    # A runtime that sends no rp_id at all is still served: the header arrives
+    # only from a runtime new enough to forward it.
+    st, out = _req(base, "POST", "/prove/age-over",
+                   _age_over_body(holder, holder_pub, ivr_jws, salts, rp="shop.example"),
+                   headers={"X-Privasys-Voucher-Claims": claims,
+                            "X-Privasys-Voucher-Jti": "vch-legacy"})
+    assert st == 200, out
+
+
 def test_voucher_required_in_strict_mode(server, monkeypatch):
     """With REQUIRE_VOUCHER on, a non-self relying party with no voucher is
     refused; a self audience (wallet-internal proof) is still allowed."""

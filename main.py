@@ -56,6 +56,12 @@ _MANIFEST = _load_manifest()
 # keys; the Jti is the settlement handle we echo into the disclosure for audit.
 _VOUCHER_CLAIMS_HEADER = "X-Privasys-Voucher-Claims"
 _VOUCHER_JTI_HEADER = "X-Privasys-Voucher-Jti"
+# The relying party the voucher was minted for. The runtime cannot check it: it
+# knows which attested app is being called, not which relying party the call is
+# serving. We do, because it is in the request we are answering. Without this
+# comparison a voucher bought by one relying party paid for a disclosure to
+# another.
+_VOUCHER_RP_ID_HEADER = "X-Privasys-Voucher-Rp-Id"
 
 
 def _b64u_field(payload: dict, name: str) -> bytes:
@@ -512,6 +518,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if authorised:
             if key not in authorised:
                 raise VerificationError(f"the disclosure voucher does not authorise {key}")
+            paid_for = self.headers.get(_VOUCHER_RP_ID_HEADER, "").strip()
+            if paid_for and paid_for != rp_id:
+                raise VerificationError(
+                    "the disclosure voucher was issued for another relying party")
             return self.headers.get(_VOUCHER_JTI_HEADER, "")
         if config.REQUIRE_VOUCHER and rp_id not in config.SELF_AUDIENCES:
             raise VerificationError("a paid disclosure voucher is required for this relying party")

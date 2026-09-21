@@ -1,4 +1,7 @@
 {
+  "x-privasys": {
+    "attribute_provider": "privasys"
+  },
   "configure": {
     "name": "configure",
     "title": "Load CSCA trust anchors",
@@ -9,7 +12,7 @@
       "properties": {
         "master_list_cms": {
           "type": "string",
-          "description": "Raw ICAO CSCA Master List (.ml file), base64-encoded. A CMS SignedData wrapping CscaMasterListData (ICAO Doc 9303 Part 12), e.g. the quarterly list from icao.int. The verifier checks the CMS signature and the ML-signer chain to the pinned ICAO/UN root, then extracts the CSCA certificates. SHA-256 of the resulting anchor set is committed to the RA-TLS leaf at the Identity Trust Anchors OID (1.3.6.1.4.1.65230.3.5.1) so relying parties can pin which anchors were in force.",
+          "description": "Raw ICAO CSCA Master List (.ml file), base64-encoded. A CMS SignedData wrapping CscaMasterListData (ICAO Doc 9303 Part 12), e.g. the quarterly list from icao.int. The verifier checks the CMS signature and the ML-signer chain to the pinned ICAO/UN root, then extracts the CSCA certificates. SHA-256 of the resulting anchor set is committed to the RA-TLS leaf at the Identity Trust Anchors OID (1.3.6.1.4.1.65230.5.4.1) so relying parties can pin which anchors were in force.",
           "x-privasys": {
             "label": "ICAO CSCA Master List",
             "help": "Upload the raw .ml download (a CMS SignedData wrapping CscaMasterListData). The browser encodes it and sends it over a sealed session direct to the enclave, so the control-plane 1 MiB proxy cap no longer applies.",
@@ -30,7 +33,7 @@
       "role": "config",
       "title": "Load CSCA trust anchors",
       "endpoint": "/configure",
-      "description": "Provision the CSCA trust anchors from a raw ICAO Master List and lift the configure-then-freeze gate. Validates the list's CMS signature and its chain to the pinned ICAO/UN CSCA root; extracts and persists the CSCA certificates on the sealed volume. Returns {status: \"configured\", trust_anchors_digest} - the digest is reproducible for the same anchor set and is attested at OID 1.3.6.1.4.1.65230.3.5.1.",
+      "description": "Provision the CSCA trust anchors from a raw ICAO Master List and lift the configure-then-freeze gate. Validates the list's CMS signature and its chain to the pinned ICAO/UN CSCA root; extracts and persists the CSCA certificates on the sealed volume. Returns {status: \"configured\", trust_anchors_digest} - the digest is reproducible for the same anchor set and is attested at OID 1.3.6.1.4.1.65230.5.4.1.",
       "inputSchema": {
         "type": "object",
         "properties": {
