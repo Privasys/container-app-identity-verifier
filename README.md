@@ -86,7 +86,7 @@ the image. Load it at runtime via `/configure` as a raw ICAO CSCA Master List
 signature and its signer chain to the pinned ICAO/UN root before extracting the
 CSCAs — there is no unsigned-PEM path. It is persisted on the per-app encrypted
 volume. The SHA-256 of the active set is published as an attestation extension
-(OID `1.3.6.1.4.1.65230.3.5.1`, the app-custom per-workload arc), so a relying party can pin which trust anchors were
+(OID `1.3.6.1.4.1.65230.5.4.1`, the app-custom per-workload arc), so a relying party can pin which trust anchors were
 in force from the RA-TLS certificate. Updating the list changes that OID; no image
 rebuild.
 

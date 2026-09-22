@@ -8,7 +8,7 @@ image (they change constantly). They live on the per-app sealed volume, are
 settable/updatable at runtime, and the active set is hashed and published as the
 TRUST_ANCHORS_OID attestation extension — so relying parties can pin "which trust
 anchors were in force" via the RA-TLS leaf, exactly like the egress CA-root hash
-(EGRESS_CA_HASH_OID …65230.2.1). See kyc-enclave-design.md §7.4.
+(EGRESS_CA_HASH_OID …65230.2.2). See kyc-enclave-design.md §7.4.
 """
 
 from __future__ import annotations

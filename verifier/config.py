@@ -9,7 +9,7 @@ import os
 
 # Bumped per release so the deployed measurement (image digest at OID 3.2)
 # changes and versions are distinguishable via GET /version.
-APP_VERSION = "0.6.7"
+APP_VERSION = "0.6.8"
 
 # The verifier's own measurement, stamped into every IVR so a relying party can
 # tell which audited verifier code produced a receipt. PRIVASYS_IMAGE_DIGEST is
@@ -31,14 +31,14 @@ MEASUREMENT = os.environ.get("PRIVASYS_IMAGE_DIGEST", "unbound")
 # correct home. (The earlier 2.8 was module-level — the 2.x arc is for
 # platform-SET facts like the egress-CA hash 2.1, not app-managed values — so
 # it silently never landed in the leaf.) See kyc-enclave-design §7.4.
-TRUST_ANCHORS_OID = "1.3.6.1.4.1.65230.3.5.1"
+TRUST_ANCHORS_OID = "1.3.6.1.4.1.65230.5.4.1"
 
 # SHA-256 of the active wallet-provider JWKS — the set of IdP (wallet-provider)
 # public keys the enclave trusts to sign a Wallet Instance Attestation (WIA).
 # Provisioned at runtime via /configure (never baked into the image) and attested
 # under the same app-custom arc (…3.5.<n>) as the CSCA anchors, so a relying party
 # can pin which wallet-provider keys were in force. See attribute-billing-plan §3.
-WALLET_PROVIDER_JWKS_OID = "1.3.6.1.4.1.65230.3.5.2"
+WALLET_PROVIDER_JWKS_OID = "1.3.6.1.4.1.65230.5.4.2"
 
 # Commitment key under which the DG2 portrait is disclosable as a VALUE (the
 # b64url JPEG). Distinct from receipt.PORTRAIT_FIELD, which is the separately
