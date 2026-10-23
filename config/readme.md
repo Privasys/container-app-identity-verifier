@@ -2,9 +2,15 @@
 
 The verifier boots **frozen**. Until its CSCA trust anchors are loaded, every
 endpoint except `/health`, `/version`, `/.well-known/jwks.json` and `/configure`
-returns `503 "app is awaiting initial configuration"`. Configuration loads the
-Country Signing CA (CSCA) certificates that Passive Authentication chains each
-passport's Document Signer Certificate to.
+returns `503 "app is awaiting initial configuration"`. Configuration loads two things:
+
+- the Country Signing CA (CSCA) certificates that Passive Authentication chains
+  each passport's Document Signer Certificate to, and
+- the **wallet-provider JWKS**: the keys privasys.id signs Wallet Instance
+  Attestations with. `verify_identity`, `read_mrz` and every `prove` call
+  require a WIA, so a verifier without these keys refuses every wallet ID check
+  with "Wallet Instance Attestation rejected: no wallet-provider keys
+  configured", even though it is configured and serving.
 
 Anchors are accepted **only** as the **ICAO CSCA Master List** (a CMS `.ml`, ICAO
 Doc 9303 Part 12). The enclave validates the list's CMS signature and that it
@@ -13,8 +19,10 @@ no raw-PEM or arbitrary-anchor path: a list that does not chain to the genuine
 ICAO root is rejected. This is the root of trust for the whole verification, so
 it is enforced in the enclave, not trusted from whoever supplies the file.
 
-`config/initialise.sh` does it end to end: base64-encode the master list, send it
-to `/configure` over RA-TLS with the Privasys CLI.
+`config/initialise.sh` does it end to end: base64-encode the master list, fetch
+the JWKS from `https://privasys.id/wallet-provider/jwks`, and send both to
+`/configure` over RA-TLS with the Privasys CLI. The portal's Configure form asks
+for both too.
 
 ## Prerequisites
 
@@ -44,7 +52,14 @@ If your CLI is pointed at a different platform than the one the verifier runs on
 A successful run prints:
 
 ```json
-{"status":"configured","trust_anchors_digest":"892611a7…"}
+{"status":"configured","trust_anchors_digest":"892611a7…","wallet_provider_jwks_digest":"50d50135…"}
+```
+
+Check both afterwards, and after **any** redeploy:
+
+```sh
+privasys apps call <app> trust-anchors/status --data '{}'          # count 570 or so
+privasys apps call <app> wallet-provider-jwks/status --data '{}'   # count >= 1
 ```
 
 `trust_anchors_digest` is the SHA-256 of the active anchor set, also published as
@@ -58,6 +73,13 @@ back **already configured**. You only re-run this:
 - after the data volume is wiped / re-created, or
 - to rotate to a newer master list (the `.ml` is reissued ~quarterly). Rotation
   uses the same verified path (`POST /trust-anchors` with `master_list_cms`).
+- to rotate the wallet-provider keys (privasys.id changed its WIA signing key).
+  Once the anchors are loaded, `/configure` accepts the JWKS alone:
+
+```sh
+privasys apps call <app> configure --no-challenge \
+  --data "{\"wallet_provider_jwks\": $(curl -s https://privasys.id/wallet-provider/jwks)}"
+```
 
 ## Sourcing the master list
 
@@ -73,7 +95,7 @@ deliberately.
 
 ## What the script does (and the manual equivalent)
 
-The script base64-encodes the `.ml` into `{"master_list_cms": "<b64>"}` and runs:
+The script builds `{"master_list_cms": "<b64 of the .ml>", "wallet_provider_jwks": {…}}` and runs:
 
 ```sh
 privasys apps call <app> configure --data @<body.json> --no-challenge

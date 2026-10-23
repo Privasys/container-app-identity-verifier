@@ -4,9 +4,9 @@
   },
   "configure": {
     "name": "configure",
-    "title": "Load CSCA trust anchors",
+    "title": "Load trust anchors and wallet-provider keys",
     "endpoint": "/configure",
-    "description": "Provision the CSCA trust anchors from a raw ICAO Master List and lift the configure-then-freeze gate. The verifier validates the list's CMS signature and that it chains to the pinned ICAO/UN CSCA root before accepting it; raw/unsigned anchors are rejected. Needed on first provisioning or after a data-volume wipe; anchors persist on the sealed volume and reload on restart. Every other endpoint returns HTTP 503 until configured.",
+    "description": "Provision the CSCA trust anchors from a raw ICAO Master List, and the wallet-provider keys that sign Wallet Instance Attestations, then lift the configure-then-freeze gate. The verifier validates the list's CMS signature and that it chains to the pinned ICAO/UN CSCA root before accepting it; raw/unsigned anchors are rejected. Needed on first provisioning or after a data-volume wipe; both persist on the sealed volume and reload on restart. Every other endpoint returns HTTP 503 until configured, and every wallet ID check is refused until the wallet-provider keys are loaded.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -20,10 +20,20 @@
           },
           "contentEncoding": "base64",
           "contentMediaType": "application/pkcs7-mime"
+        },
+        "wallet_provider_jwks": {
+          "type": "string",
+          "description": "The wallet-provider JWKS (JSON) whose keys sign Wallet Instance Attestations, published by privasys.id at https://privasys.id/wallet-provider/jwks. The verifier requires a WIA on verify_identity, read_mrz and every prove call, so without these keys every wallet ID check is refused. Stored on the sealed volume; SHA-256 of the canonical JWKS is committed to the RA-TLS leaf at OID 1.3.6.1.4.1.65230.5.4.2. Once the trust anchors are loaded, a call carrying only this field rotates the keys.",
+          "x-privasys": {
+            "label": "Wallet-provider keys (JWKS)",
+            "help": "Paste the JSON served at https://privasys.id/wallet-provider/jwks. Without it every wallet ID check fails with \"no wallet-provider keys configured\".",
+            "placeholder": "{\"keys\":[{\"kty\":\"EC\",\"crv\":\"P-256\", ...}]}"
+          }
         }
       },
       "required": [
-        "master_list_cms"
+        "master_list_cms",
+        "wallet_provider_jwks"
       ]
     }
   },
@@ -31,9 +41,9 @@
     {
       "name": "configure",
       "role": "config",
-      "title": "Load CSCA trust anchors",
+      "title": "Load trust anchors and wallet-provider keys",
       "endpoint": "/configure",
-      "description": "Provision the CSCA trust anchors from a raw ICAO Master List and lift the configure-then-freeze gate. Validates the list's CMS signature and its chain to the pinned ICAO/UN CSCA root; extracts and persists the CSCA certificates on the sealed volume. Returns {status: \"configured\", trust_anchors_digest} - the digest is reproducible for the same anchor set and is attested at OID 1.3.6.1.4.1.65230.5.4.1.",
+      "description": "Provision the CSCA trust anchors from a raw ICAO Master List and the wallet-provider JWKS, then lift the configure-then-freeze gate. Validates the list's CMS signature and its chain to the pinned ICAO/UN CSCA root; extracts and persists the CSCA certificates on the sealed volume, with the JWKS beside them. Returns {status: \"configured\", trust_anchors_digest, wallet_provider_jwks_digest} - attested at OIDs 1.3.6.1.4.1.65230.5.4.1 and .5.4.2. Once the anchors are loaded, a call with only wallet_provider_jwks rotates the keys.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -44,10 +54,19 @@
               "label": "ICAO CSCA Master List (base64 .ml)",
               "help": "Base64 of the raw .ml download. Larger than the control-plane 1 MiB proxy cap - send over RA-TLS (privasys apps call identity-verifier configure)."
             }
+          },
+          "wallet_provider_jwks": {
+            "type": "string",
+            "description": "The wallet-provider JWKS (JSON) whose keys sign Wallet Instance Attestations, published by privasys.id at https://privasys.id/wallet-provider/jwks. The verifier requires a WIA on verify_identity, read_mrz and every prove call, so without these keys every wallet ID check is refused. Stored on the sealed volume; SHA-256 of the canonical JWKS is committed to the RA-TLS leaf at OID 1.3.6.1.4.1.65230.5.4.2. Once the trust anchors are loaded, a call carrying only this field rotates the keys.",
+            "x-privasys": {
+              "label": "Wallet-provider JWKS (JSON)",
+              "help": "The JSON served at https://privasys.id/wallet-provider/jwks. config/initialise.sh fetches it for you."
+            }
           }
         },
         "required": [
-          "master_list_cms"
+          "master_list_cms",
+          "wallet_provider_jwks"
         ]
       }
     },

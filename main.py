@@ -262,6 +262,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # anchors are already in force (a restart persists both).
             ml_b64 = body.get("master_list_cms")
             wp_jwks = body.get("wallet_provider_jwks")
+            # A form sends an untouched field as "" (or {}): that is no value,
+            # not a JWKS to reject.
+            if wp_jwks in ("", {}) or (isinstance(wp_jwks, str) and not wp_jwks.strip()):
+                wp_jwks = None
             if raw_ml is None and not ml_b64 and wp_jwks is None:
                 self._json(400, {"error": "master_list_cms (base64 ICAO CSCA Master List) is required"})
                 return

@@ -66,7 +66,7 @@ are cheap, minimal, and never re-expose the whole identity.
 | `GET` | `/health`, `/version` | liveness / deployed version |
 | `GET` | `/.well-known/jwks.json` | signing public key (ES256) |
 | `GET` | `/.well-known/jwt-vc-issuer` | SD-JWT VC issuer metadata (`{ issuer, jwks }`) |
-| `POST` | `/configure` | load CSCA trust anchors (validated ICAO master list); lift the startup freeze |
+| `POST` | `/configure` | load CSCA trust anchors (validated ICAO master list) and the wallet-provider JWKS; lift the startup freeze |
 | `POST` | `/read-mrz` | → `{ document_number, date_of_birth, date_of_expiry }` (chip access key) |
 | `POST` | `/aa-challenge` | → `{ challenge, token }` — a fresh Active Authentication nonce for the chip to sign |
 | `POST` | `/verify-identity` | → `{ ivr, salts, fields, viz_match }` |

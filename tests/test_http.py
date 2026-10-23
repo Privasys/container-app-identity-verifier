@@ -614,3 +614,38 @@ def test_manifest_served_with_fill_markers(server):
         assert props["wia"]["x-privasys"]["fill"] == "wallet_instance_attestation"
         assert props["holder_pub"]["x-privasys"]["fill"] == "holder_public_key"
         assert "wia" in tools[name]["inputSchema"]["required"]
+
+
+# ── Configure carries the wallet-provider keys ───────────────────────────
+
+def test_configure_takes_the_jwks_as_a_json_string(server, monkeypatch):
+    # The portal's form sends the pasted JWKS as a string.
+    base = server
+    _signer, jwks = _wia_provider()
+    dg1 = fixtures.build_dg1()
+    _sod, csca, _ = fixtures.build_chain({1: dg1})
+    assert _configure_with_csca(base, monkeypatch, [csca], wallet_provider_jwks=json.dumps(jwks)) == 200
+    st, out = _req(base, "POST", "/wallet-provider-jwks/status", {})
+    assert st == 200 and out["count"] == 1, out
+
+
+def test_configure_ignores_an_empty_jwks_field(server, monkeypatch):
+    # An untouched form field is no value: the anchors still load.
+    base = server
+    dg1 = fixtures.build_dg1()
+    _sod, csca, _ = fixtures.build_chain({1: dg1})
+    assert _configure_with_csca(base, monkeypatch, [csca], wallet_provider_jwks="") == 200
+    st, out = _req(base, "POST", "/wallet-provider-jwks/status", {})
+    assert st == 200 and out["count"] == 0, out
+
+
+def test_the_manifest_asks_for_the_jwks_on_every_configure_path():
+    # A reconfigure that leaves the keys out leaves every wallet ID check
+    # refused, so the portal form and the tool schema both require them.
+    with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "privasys.json"),
+              encoding="utf-8") as f:
+        manifest = json.load(f)
+    tool = next(t for t in manifest["tools"] if t["name"] == "configure")
+    for schema in (manifest["configure"]["inputSchema"], tool["inputSchema"]):
+        assert "wallet_provider_jwks" in schema["properties"]
+        assert set(schema["required"]) == {"master_list_cms", "wallet_provider_jwks"}
