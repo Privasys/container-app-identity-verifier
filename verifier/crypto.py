@@ -260,6 +260,17 @@ def holder_binding(holder_pub_raw: bytes) -> str:
     return b64u_encode(hashlib.sha256(holder_pub_raw).digest())
 
 
+def holder_commitment(hk_pub_raw: bytes, salt: bytes) -> str:
+    """b64url(SHA-256(SEC1(hk) ‖ salt)): the commitment to the holder key the
+    wallet derives from its seed for this verifier, the same on every device
+    of the holder. The salt keeps two holders' commitments, and two of one
+    holder's, unlinkable to anyone but the verifier."""
+    h = hashlib.sha256()
+    h.update(hk_pub_raw)
+    h.update(salt)
+    return b64u_encode(h.digest())
+
+
 # ── JWKS-verified JWTs (e.g. the Wallet Instance Attestation) ─────────────
 
 def public_from_jwk(jwk: dict) -> "PublicKey":

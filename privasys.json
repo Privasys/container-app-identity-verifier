@@ -195,6 +195,10 @@
             "x-privasys": {
               "fill": "wallet_instance_attestation"
             }
+          },
+          "holder": {
+            "type": "object",
+            "description": "Optional. {hk_pub, salt, sig}, base64url: the key the wallet derives from its seed for this verifier (the same on every device of the holder), a 16-byte salt, and its raw ES256 signature over canonical JSON {op: \"verify_identity\", holder_pub}. The IVR then carries holder_commitment = b64url(SHA-256(hk_pub || salt)), so it can be rebound to the holder's other devices."
           }
         },
         "required": [
@@ -203,6 +207,57 @@
           "data_groups",
           "wia"
         ]
+      }
+    },
+    {
+      "name": "rebind_challenge",
+      "title": "Rebind challenge",
+      "endpoint": "/rebind-challenge",
+      "description": "Returns {challenge, expires_at}: a single-use token, valid two minutes, that a rebind call must sign.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "rebind",
+      "title": "Rebind an IVR to another device of the holder",
+      "endpoint": "/rebind",
+      "description": "Re-issue an IVR for another device of the same holder, with the same commitments and results (no new check runs). The new device signs canonical JSON {op: \"rebind\", ivr: <jti>, challenge} with its hardware key (holder_pub, holder_sig, and a WIA for it); the holder key signs the same message and must open the IVR's holder_commitment. An IVR issued before holder commitments needs the device it is bound to to sign too (legacy), once. Returns {ivr}.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "ivr",
+          "challenge",
+          "holder_pub",
+          "holder_sig",
+          "holder"
+        ],
+        "properties": {
+          "ivr": {
+            "type": "string"
+          },
+          "challenge": {
+            "type": "string"
+          },
+          "holder_pub": {
+            "type": "string"
+          },
+          "holder_sig": {
+            "type": "string"
+          },
+          "holder": {
+            "type": "object",
+            "description": "{hk_pub, salt, sig}"
+          },
+          "legacy": {
+            "type": "object",
+            "description": "{holder_pub, holder_sig}: the original device, for an IVR without holder_commitment"
+          },
+          "wia": {
+            "type": "string"
+          }
+        }
       }
     },
     {

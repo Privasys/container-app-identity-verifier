@@ -9,7 +9,7 @@ import os
 
 # Bumped per release so the deployed measurement (image digest at OID 3.2)
 # changes and versions are distinguishable via GET /version.
-APP_VERSION = "0.6.9"
+APP_VERSION = "0.7.0"
 
 # The verifier's own measurement, stamped into every IVR so a relying party can
 # tell which audited verifier code produced a receipt. PRIVASYS_IMAGE_DIGEST is
@@ -79,6 +79,8 @@ TOKEN_TTL_SECONDS = int(os.environ.get("IDENTITY_VERIFIER_TOKEN_TTL", "300"))
 IVR_TYP = "application/privasys-ivr+jws"
 DISCLOSURE_TYP = "dc+sd-jwt"
 AA_CHALLENGE_TYP = "application/privasys-aa-challenge+jws"
+REBIND_CHALLENGE_TYP = "application/privasys-rebind-challenge+jws"
+REBIND_CHALLENGE_TTL_SECONDS = 120
 
 # SD-JWT VC type (vct) of every disclosure token. The concrete claim is carried
 # in the token's `claim`/`value` pair, so one vct covers the whole family.

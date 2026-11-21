@@ -30,6 +30,9 @@ from verifier.verification import VerificationError, authenticate_and_extract, m
 _CONFIG_LOCK = threading.Lock()
 _CONFIGURED = False
 _SIGNING_KEY = crypto.SigningKey.load()
+# Rebind challenges already answered, until they expire: each answers one call.
+_SPENT_LOCK = threading.Lock()
+_SPENT_CHALLENGES: dict[str, int] = {}
 
 _OPEN_PATHS = ("/health", "/version", "/.well-known/jwks.json",
                "/.well-known/jwt-vc-issuer", "/.well-known/privasys-manifest")
@@ -194,6 +197,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._read_mrz(body)
             elif path == "/aa-challenge":
                 self._aa_challenge()
+            elif path == "/rebind-challenge":
+                self._rebind_challenge()
+            elif path == "/rebind":
+                self._rebind(body)
             elif path == "/verify-identity":
                 self._verify_identity(body)
             elif path == "/prove/age-over":
@@ -417,9 +424,88 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # but never let it pass silently — surface it in the container logs.
             print(f"identity-verifier: WIA present but invalid (not enforced): {exc}")
 
+    def _holder_key(self, blk, msg: bytes) -> str:
+        """Check a holder block {hk_pub, salt, sig}: the key the wallet derives
+        from its seed for this verifier, the same on all the holder's devices.
+        Returns the commitment to it."""
+        if not isinstance(blk, dict):
+            raise VerificationError("holder {hk_pub, salt, sig} is required")
+        hk_pub = _b64u_field(blk, "hk_pub")
+        salt = _b64u_field(blk, "salt")
+        if len(salt) != 16:
+            raise VerificationError("holder.salt must be 16 bytes")
+        try:
+            ok = crypto.PublicKey.from_raw(hk_pub).verify(msg, _b64u_field(blk, "sig"))
+        except Exception as exc:  # noqa: BLE001 — malformed key
+            raise VerificationError("holder.hk_pub is not a P-256 key") from exc
+        if not ok:
+            raise VerificationError("the holder signature does not verify")
+        return crypto.holder_commitment(hk_pub, salt)
+
+    def _rebind_challenge(self) -> None:
+        nonce = crypto.b64u_encode(os.urandom(16))
+        exp = int(time.time()) + config.REBIND_CHALLENGE_TTL_SECONDS
+        token = crypto.jws_sign({"n": nonce, "exp": exp}, _SIGNING_KEY, config.REBIND_CHALLENGE_TYP)
+        self._json(200, {"challenge": token, "expires_at": exp})
+
+    def _spend_rebind_challenge(self, token: str) -> None:
+        try:
+            payload = crypto.jws_verify(token, _SIGNING_KEY.public())
+        except ValueError as exc:
+            raise VerificationError("the challenge is not one this verifier issued") from exc
+        now = int(time.time())
+        if int(payload.get("exp", 0)) < now:
+            raise VerificationError("the challenge has expired; ask for a new one")
+        with _SPENT_LOCK:
+            for n, exp in list(_SPENT_CHALLENGES.items()):
+                if exp < now:
+                    del _SPENT_CHALLENGES[n]
+            if payload.get("n") in _SPENT_CHALLENGES:
+                raise VerificationError("the challenge was already used")
+            _SPENT_CHALLENGES[payload.get("n")] = int(payload["exp"])
+
+    def _rebind(self, body: dict) -> None:
+        """Re-issue an IVR for another device of the same holder.
+
+        The new device signs with its hardware key (and carries a WIA for it),
+        and the holder key proves it is the same holder: it must open the
+        IVR's holder commitment. An IVR issued before holder commitments has
+        none, so the device it is bound to signs once more to add one; after
+        that, every device of the holder can rebind it without the first."""
+        ivr = receipt.verify_ivr(_require(body, "ivr"), _SIGNING_KEY.public())
+        challenge = _require(body, "challenge")
+        msg = receipt.rebind_message(ivr["jti"], challenge)
+        new_pub = _b64u_field(body, "holder_pub")
+        if not crypto.PublicKey.from_raw(new_pub).verify(msg, _b64u_field(body, "holder_sig")):
+            raise VerificationError("the device signature does not verify")
+        self._enforce_wia(body, new_pub)
+        commitment = self._holder_key(body.get("holder"), msg)
+        held = ivr.get("holder_commitment")
+        if held:
+            if held != commitment:
+                raise VerificationError("the IVR belongs to another holder")
+        else:
+            legacy = body.get("legacy")
+            if not isinstance(legacy, dict):
+                raise VerificationError(
+                    "this IVR predates holder keys: the device it is bound to must sign (legacy)")
+            old_pub = _b64u_field(legacy, "holder_pub")
+            if crypto.holder_binding(old_pub) != ivr.get("holder_binding"):
+                raise VerificationError("legacy.holder_pub is not the key the IVR is bound to")
+            if not crypto.PublicKey.from_raw(old_pub).verify(msg, _b64u_field(legacy, "holder_sig")):
+                raise VerificationError("the legacy device signature does not verify")
+        self._spend_rebind_challenge(challenge)
+        self._json(200, {"ivr": receipt.rebind_ivr(_SIGNING_KEY, config.MEASUREMENT, ivr,
+                                                   new_pub, commitment)})
+
     def _verify_identity(self, body: dict) -> None:
         holder_pub = _b64u_field(body, "holder_pub")
         self._enforce_wia(body, holder_pub)
+        # Optional: the holder key, so the IVR can later be rebound to the
+        # holder's other devices. Checked before the heavy verification.
+        commitment = None
+        if body.get("holder") is not None:
+            commitment = self._holder_key(body["holder"], receipt.holder_key_message(holder_pub))
         doc, dgs = authenticate_and_extract(body)
         doc.chip_auth = self._check_active_auth(body, dgs)
         bio = match_biometric(body, dgs)
@@ -437,7 +523,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # picture_id field, without the enclave retaining it.
         ivr, salts = receipt.build_ivr(
             _SIGNING_KEY, config.MEASUREMENT, doc, bio, holder_pub,
-            dg2=dgs.get(2, b""),
+            dg2=dgs.get(2, b""), holder_commitment=commitment,
         )
         # `salts` go to the client so it can later open commitments; the enclave
         # keeps nothing. The client auto-fills its profile from doc.fields as

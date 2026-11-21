@@ -51,6 +51,7 @@ def build_ivr(
     bio: BioResult,
     holder_pub_raw: bytes,
     dg2: bytes = b"",
+    holder_commitment: str | None = None,
 ) -> tuple[str, dict]:
     """Return (ivr_jws, salts) where salts maps field → b64url(salt).
 
@@ -102,7 +103,45 @@ def build_ivr(
         "iat": now,
         "exp": now + config.IVR_TTL_SECONDS,
     }
+    if holder_commitment:
+        payload["holder_commitment"] = holder_commitment
     return crypto.jws_sign(payload, key, config.IVR_TYP), salts
+
+
+def rebind_ivr(key: crypto.SigningKey, measurement: str, ivr: dict,
+               new_holder_pub_raw: bytes, holder_commitment: str) -> str:
+    """Re-issue a verified IVR for another device of the same holder.
+
+    An IVR is bound to the hardware key of the device that read the
+    document. Device sync copies it to the holder's other devices, where that
+    key does not exist, so the copy cannot be used. The holder proves it is
+    the same holder with the key its wallet derives from its seed (the
+    commitment), and the new device's hardware key takes over the binding.
+    Everything the verification established (commitments, document result,
+    biometric result, validity) is carried over unchanged: no new check ran.
+    """
+    payload = dict(ivr)
+    payload["jti"] = crypto.b64u_encode(os.urandom(16))
+    payload["holder_binding"] = crypto.holder_binding(new_holder_pub_raw)
+    payload["holder_commitment"] = holder_commitment
+    payload["rebound_from"] = ivr["jti"]
+    # The original measurement says which build verified the document; this
+    # one says which build rebound it.
+    payload["rebound_by"] = measurement
+    return crypto.jws_sign(payload, key, config.IVR_TYP)
+
+
+def rebind_message(ivr_jti: str, challenge: str) -> bytes:
+    """What the holder key, the new device key and (for an IVR issued before
+    holder commitments) the original device key all sign."""
+    return crypto.canonical_json({"op": "rebind", "ivr": ivr_jti, "challenge": challenge})
+
+
+def holder_key_message(holder_pub_raw: bytes) -> bytes:
+    """What the holder key signs at verification to bind the new IVR to the
+    holder as well as to the device."""
+    return crypto.canonical_json({"op": "verify_identity",
+                                  "holder_pub": crypto.b64u_encode(holder_pub_raw)})
 
 
 def verify_ivr(ivr_jws: str, pub: crypto.PublicKey) -> dict:

@@ -649,3 +649,92 @@ def test_the_manifest_asks_for_the_jwks_on_every_configure_path():
     for schema in (manifest["configure"]["inputSchema"], tool["inputSchema"]):
         assert "wallet_provider_jwks" in schema["properties"]
         assert set(schema["required"]) == {"master_list_cms", "wallet_provider_jwks"}
+
+
+# ── rebinding an IVR to another device of the same holder ──────────────
+
+def _holder_block(hk, salt, msg):
+    return {"hk_pub": crypto.b64u_encode(hk.public().raw()), "salt": crypto.b64u_encode(salt),
+            "sig": crypto.b64u_encode(hk.sign(msg))}
+
+
+def _rebind(base, ivr_jws, hk, salt, device, legacy=None):
+    st, ch = _req(base, "POST", "/rebind-challenge", {})
+    assert st == 200, ch
+    ivr = receipt.verify_ivr(ivr_jws, main._SIGNING_KEY.public())
+    msg = receipt.rebind_message(ivr["jti"], ch["challenge"])
+    body = {"ivr": ivr_jws, "challenge": ch["challenge"],
+            "holder_pub": crypto.b64u_encode(device.public().raw()),
+            "holder_sig": crypto.b64u_encode(device.sign(msg)),
+            "holder": _holder_block(hk, salt, msg)}
+    if legacy is not None:
+        body["legacy"] = {"holder_pub": crypto.b64u_encode(legacy.public().raw()),
+                          "holder_sig": crypto.b64u_encode(legacy.sign(msg))}
+    return _req(base, "POST", "/rebind", body)
+
+
+def test_rebind_moves_an_ivr_to_another_device_of_the_holder(server, monkeypatch):
+    base = server
+    dg1 = fixtures.build_dg1()
+    sod, csca, _ = fixtures.build_chain({1: dg1})
+    assert _configure_with_csca(base, monkeypatch, [csca]) == 200
+    phone, ipad = crypto.SigningKey.generate(), crypto.SigningKey.generate()
+    hk, salt = crypto.SigningKey.generate(), os.urandom(16)
+    phone_pub = phone.public().raw()
+    st, vi = _req(base, "POST", "/verify-identity", {
+        "holder_pub": crypto.b64u_encode(phone_pub), "sod": _b64(sod), "data_groups": {"1": _b64(dg1)},
+        "holder": _holder_block(hk, salt, receipt.holder_key_message(phone_pub)),
+    })
+    assert st == 200, vi
+    ivr = receipt.verify_ivr(vi["ivr"], main._SIGNING_KEY.public())
+    assert ivr["holder_commitment"] == crypto.holder_commitment(hk.public().raw(), salt)
+
+    # The iPad cannot prove with the phone's IVR.
+    st, _ = _req(base, "POST", "/prove/age-over", _age_over_body(ipad, ipad.public().raw(), vi["ivr"], vi["salts"]))
+    assert st == 200 and receipt.verify_disclosure(_["token"], main._SIGNING_KEY.public())["value"] is False
+
+    st, out = _rebind(base, vi["ivr"], hk, salt, ipad)
+    assert st == 200, out
+    re_ivr = receipt.verify_ivr(out["ivr"], main._SIGNING_KEY.public())
+    assert re_ivr["holder_binding"] == crypto.holder_binding(ipad.public().raw())
+    assert re_ivr["commitments"] == ivr["commitments"] and re_ivr["rebound_from"] == ivr["jti"]
+    st, tok = _req(base, "POST", "/prove/age-over", _age_over_body(ipad, ipad.public().raw(), out["ivr"], vi["salts"]))
+    assert st == 200 and receipt.verify_disclosure(tok["token"], main._SIGNING_KEY.public())["value"] is True
+
+    # Another holder's key cannot rebind it.
+    st, err = _rebind(base, vi["ivr"], crypto.SigningKey.generate(), salt, crypto.SigningKey.generate())
+    assert st == 400 and "another holder" in err["error"]
+
+
+def test_rebind_of_a_legacy_ivr_needs_its_original_device(server, monkeypatch):
+    base = server
+    # _proven_setup's IVR has no holder commitment.
+    holder, holder_pub, ivr_jws, salts = _proven_setup(base, monkeypatch)
+    hk, salt = crypto.SigningKey.generate(), os.urandom(16)
+    ipad = crypto.SigningKey.generate()
+    st, err = _rebind(base, ivr_jws, hk, salt, ipad)
+    assert st == 400 and "predates" in err["error"]
+    st, err = _rebind(base, ivr_jws, hk, salt, ipad, legacy=crypto.SigningKey.generate())
+    assert st == 400
+    st, out = _rebind(base, ivr_jws, hk, salt, ipad, legacy=holder)
+    assert st == 200, out
+    re_ivr = receipt.verify_ivr(out["ivr"], main._SIGNING_KEY.public())
+    assert re_ivr["holder_commitment"] == crypto.holder_commitment(hk.public().raw(), salt)
+
+
+def test_rebind_challenge_is_single_use(server, monkeypatch):
+    base = server
+    holder, holder_pub, ivr_jws, salts = _proven_setup(base, monkeypatch)
+    hk, salt, ipad = crypto.SigningKey.generate(), os.urandom(16), crypto.SigningKey.generate()
+    st, ch = _req(base, "POST", "/rebind-challenge", {})
+    ivr = receipt.verify_ivr(ivr_jws, main._SIGNING_KEY.public())
+    msg = receipt.rebind_message(ivr["jti"], ch["challenge"])
+    body = {"ivr": ivr_jws, "challenge": ch["challenge"],
+            "holder_pub": crypto.b64u_encode(ipad.public().raw()),
+            "holder_sig": crypto.b64u_encode(ipad.sign(msg)),
+            "holder": _holder_block(hk, salt, msg),
+            "legacy": {"holder_pub": crypto.b64u_encode(holder_pub),
+                       "holder_sig": crypto.b64u_encode(holder.sign(msg))}}
+    assert _req(base, "POST", "/rebind", body)[0] == 200
+    st, err = _req(base, "POST", "/rebind", body)
+    assert st == 400 and "already used" in err["error"]
