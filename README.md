@@ -59,6 +59,17 @@ document data cross-reference.
 This split means the document is read and authenticated once; subsequent claims
 are cheap, minimal, and never re-expose the whole identity.
 
+4. **`POST /rebind`** (since 0.7.0): an IVR is bound to the hardware key of the
+   device that read the document. When the wallet syncs it to another of the
+   holder's devices, that device asks for the same IVR bound to its own key. The
+   IVR also carries `holder_commitment`, a salted SHA-256 of a key the wallet
+   derives from its seed for this verifier only (the same on every device of the
+   holder), set when `/verify-identity` is given a `holder` block. A rebind is
+   signed by the new device and by that holder key, which must open the
+   commitment; commitments and results carry over unchanged, and no new check
+   runs. An IVR issued before 0.7.0 has no commitment: the device it is bound to
+   signs once more (`legacy`) to add one.
+
 ## API
 
 | Method | Path | Purpose |
@@ -71,6 +82,8 @@ are cheap, minimal, and never re-expose the whole identity.
 | `POST` | `/aa-challenge` | → `{ challenge, token }` — a fresh Active Authentication nonce for the chip to sign |
 | `POST` | `/verify-identity` | → `{ ivr, salts, fields, viz_match }` |
 | `POST` | `/prove/age-over`, `/prove/age-band`, `/prove/field`, `/prove/document-valid` | → `{ token }` (SD-JWT VC) |
+| `POST` | `/rebind-challenge` | → `{ challenge, expires_at }`, single use, two minutes |
+| `POST` | `/rebind` | → `{ ivr }`, the same IVR bound to the calling device (see above) |
 | `POST` | `/trust-anchors` | replace the CSCA master list (validated rotation) |
 | `GET`/`POST` | `/trust-anchors/status` (`GET /trust-anchors` too) | → `{ digest, count, oid }` |
 
