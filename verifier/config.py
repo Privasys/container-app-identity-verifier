@@ -24,9 +24,10 @@ MEASUREMENT = os.environ.get("PRIVASYS_IMAGE_DIGEST", "unbound")
 # the manager's attestation-extensions endpoint when the anchors change, so the
 # trust-anchor set is attested without baking it into the measured image.
 #
-# This lives in the APP-CUSTOM per-workload arc (1.3.6.1.4.1.65230.3.5.<n>) —
-# the ONLY arc the manager's attestation-extensions API accepts (it force-pins
-# every app-set value under 3.5.*; see enclave-os oids.ParseEnvVarOID). Trust
+# This lives in the APP-CUSTOM per-workload arc (1.3.6.1.4.1.65230.5.4.<n>,
+# OID scheme v2; it was 3.5.<n> in v1) — the ONLY arc the manager's
+# attestation-extensions API accepts (see enclave-os-virtual
+# oids.AppExtensionArcPrefix). Trust
 # anchors are loaded by THIS app via /configure, so an app-custom OID is the
 # correct home. (The earlier 2.8 was module-level — the 2.x arc is for
 # platform-SET facts like the egress-CA hash 2.1, not app-managed values — so
@@ -36,9 +37,19 @@ TRUST_ANCHORS_OID = "1.3.6.1.4.1.65230.5.4.1"
 # SHA-256 of the active wallet-provider JWKS — the set of IdP (wallet-provider)
 # public keys the enclave trusts to sign a Wallet Instance Attestation (WIA).
 # Provisioned at runtime via /configure (never baked into the image) and attested
-# under the same app-custom arc (…3.5.<n>) as the CSCA anchors, so a relying party
+# under the same app-custom arc (…5.4.<n>) as the CSCA anchors, so a relying party
 # can pin which wallet-provider keys were in force. See attribute-billing-plan §3.
 WALLET_PROVIDER_JWKS_OID = "1.3.6.1.4.1.65230.5.4.2"
+
+# SHA-256 of the SubjectPublicKeyInfo (DER) of the key that signs every IVR and
+# disclosure token. The key is generated in the enclave and sealed on the app
+# volume (crypto.SigningKey.load), but /.well-known/jwks.json and
+# /.well-known/jwt-vc-issuer are served over the gateway's public TLS, so
+# without this a relying party could not tell the enclave's key from one a
+# TLS terminator substituted. Published in the attested certificate, it ties
+# the issuer key to the measured build: hash the key from the issuer metadata
+# and compare. The token `kid` is the first 16 bytes of this same digest.
+SIGNING_KEY_OID = "1.3.6.1.4.1.65230.5.4.3"
 
 # Commitment key under which the DG2 portrait is disclosable as a VALUE (the
 # b64url JPEG). Distinct from receipt.PORTRAIT_FIELD, which is the separately

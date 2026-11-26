@@ -33,6 +33,21 @@ def available() -> bool:
     return bool(_NAME and _TOKEN)
 
 
+def on_platform() -> bool:
+    """Whether ANY sign says this runs on the platform: the launcher-injected
+    image digest, a manager URL, or a container name or token. Used to fail
+    closed: only when none is present is the absence of a manager taken to
+    mean "off the platform" rather than "manager unreachable"."""
+    return bool(
+        os.environ.get("PRIVASYS_IMAGE_DIGEST")
+        or os.environ.get("PRIVASYS_MANAGER_URL")
+        or os.environ.get("PRIVASYS_CONTAINER_NAME")
+        or os.environ.get("PRIVASYS_CONTAINER_TOKEN")
+        or _NAME
+        or _TOKEN
+    )
+
+
 def _post(path: str, body: dict) -> tuple[int, bytes]:
     if not available():
         raise RuntimeError(

@@ -27,8 +27,8 @@ import base64
 import hashlib
 import json
 import os
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -103,21 +103,37 @@ def _raw_to_der(raw: bytes) -> bytes:
     return encode_dss_signature(r, s)
 
 
+class KeyNotAttested(RuntimeError):
+    """The signing key's digest is not (yet) in the attested certificate, so
+    the key must not sign: a relying party could not tell its signatures from
+    those of a key a TLS terminator substituted."""
+
+
 @dataclass
 class SigningKey:
     """The verifier's ES256 signing key + a stable kid (SHA-256 of the SPKI)."""
 
     _priv: ec.EllipticCurvePrivateKey
+    # Checked before EVERY signature; raises KeyNotAttested to refuse. Set by
+    # main to require the key's digest in the attested leaf (fail closed).
+    gate: Optional[Callable[[], None]] = field(default=None, repr=False, compare=False)
 
-    @property
-    def kid(self) -> str:
+    def spki_sha256(self) -> bytes:
+        """SHA-256 of the public key's SubjectPublicKeyInfo (DER): the value
+        attested at config.SIGNING_KEY_OID, of which `kid` is a prefix."""
         spki = self._priv.public_key().public_bytes(
             serialization.Encoding.DER,
             serialization.PublicFormat.SubjectPublicKeyInfo,
         )
-        return b64u_encode(hashlib.sha256(spki).digest()[:16])
+        return hashlib.sha256(spki).digest()
+
+    @property
+    def kid(self) -> str:
+        return b64u_encode(self.spki_sha256()[:16])
 
     def sign(self, msg: bytes) -> bytes:
+        if self.gate is not None:
+            self.gate()
         der = self._priv.sign(msg, ec.ECDSA(hashes.SHA256()))
         return _der_to_raw(der)
 

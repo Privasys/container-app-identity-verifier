@@ -30,6 +30,64 @@ from verifier.verification import VerificationError, authenticate_and_extract, m
 _CONFIG_LOCK = threading.Lock()
 _CONFIGURED = False
 _SIGNING_KEY = crypto.SigningKey.load()
+
+
+_KEY_LOCK = threading.Lock()
+# Whether THIS process has put the signing key's digest in the attested leaf.
+# Starts False on every start: the leaf state does not survive a restart.
+_KEY_ATTESTED = False
+# The gate's self-heal publish runs at most once per this many seconds,
+# shared by every request: a burst of signing calls while unattested gets an
+# immediate 503 instead of each one calling the manager.
+_RETRY_INTERVAL_S = 10.0
+_LAST_RETRY = float("-inf")
+_clock = time.monotonic
+
+
+def publish_signing_key_oid() -> bool:
+    """Attest the issuer key: publish SHA-256(SPKI) of the signing key at
+    config.SIGNING_KEY_OID. Like the anchor and WIA digests it lives only in
+    the manager's leaf state, so it is published on /configure AND on every
+    restart. Returns False only when the app is clearly OFF the platform
+    (manager.on_platform() is False). On the platform without manager
+    credentials, or when the manager refuses, it raises, and the key stays
+    unable to sign."""
+    global _KEY_ATTESTED
+    if not manager.available():
+        if manager.on_platform():
+            raise RuntimeError("on the platform but without manager credentials")
+        return False
+    with _KEY_LOCK:
+        manager.set_attestation_extension(config.SIGNING_KEY_OID, _SIGNING_KEY.spki_sha256())
+        _KEY_ATTESTED = True
+    return True
+
+
+def _require_attested_key() -> None:
+    """The signing gate (fail closed). On the platform the key signs nothing,
+    not even a challenge, until its digest is in the attested leaf. A failed
+    publish is retried here, at most once per _RETRY_INTERVAL_S across all
+    requests, so a restart whose republish failed recovers without an owner
+    re-sending /configure. Open only when the app is clearly off the
+    platform, where there is no attestation to bind to."""
+    global _LAST_RETRY
+    if _KEY_ATTESTED or not manager.on_platform():
+        return
+    with _KEY_LOCK:
+        now = _clock()
+        if now - _LAST_RETRY < _RETRY_INTERVAL_S:
+            raise crypto.KeyNotAttested("the signing key is not attested yet; try again shortly")
+        _LAST_RETRY = now
+    try:
+        publish_signing_key_oid()
+    except Exception as exc:  # noqa: BLE001 — any failure means: do not sign
+        print(f"identity-verifier: refusing to sign, signing-key OID not attested: {exc}",
+              flush=True)
+        raise crypto.KeyNotAttested("the signing key is not attested yet; try again shortly") from exc
+
+
+_SIGNING_KEY.gate = _require_attested_key
+
 # Rebind challenges already answered, until they expire: each answers one call.
 _SPENT_LOCK = threading.Lock()
 _SPENT_CHALLENGES: dict[str, int] = {}
@@ -165,6 +223,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             pub = _SIGNING_KEY.public()
             self._json(200, {"issuer": config.issuer(self.headers.get("Host")),
                              "jwks": {"keys": [pub.jwk(_SIGNING_KEY.kid)]}})
+        elif path == "/signing-key/status":
+            # What the certificate should attest at SIGNING_KEY_OID, for an
+            # auditor to compare; the comparison itself is against the cert.
+            self._json(200, {"digest": _SIGNING_KEY.spki_sha256().hex(),
+                             "kid": _SIGNING_KEY.kid,
+                             "oid": config.SIGNING_KEY_OID})
         elif path in ("/trust-anchors", "/trust-anchors/status"):
             self._json(200, {"digest": trust_anchors.digest_hex(),
                              "count": trust_anchors.count(),
@@ -237,6 +301,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                  "require_wia": config.REQUIRE_WIA})
             else:
                 self._json(404, {"error": "not found"})
+        except crypto.KeyNotAttested as exc:
+            # Nothing was signed. Retryable: the next call republishes.
+            self._json(503, {"error": str(exc)})
         except (ValueError, VerificationError) as exc:
             self._json(400, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
@@ -289,6 +356,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not trust_anchors.load():
                 self._json(400, {"error": "master_list_cms is required to complete configuration"})
                 return
+            # Before the freeze lifts: no token is issued by a verifier whose
+            # certificate does not yet attest the key that signs it.
+            publish_signing_key_oid()
             if manager.available():
                 manager.config_complete()
         except master_list.MasterListError as exc:
@@ -699,6 +769,13 @@ if __name__ == "__main__":
                 wia.republish_oid()
             except Exception as exc:  # noqa: BLE001 — non-fatal, /configure republishes
                 print(f"identity-verifier: attested-OID republish failed: {exc}",
+                      flush=True)
+            # Not best-effort in effect: until this succeeds the signing gate
+            # refuses every signature (and retries the publish each time).
+            try:
+                publish_signing_key_oid()
+            except Exception as exc:  # noqa: BLE001
+                print(f"identity-verifier: signing-key OID publish failed, signing stays closed: {exc}",
                       flush=True)
 
     # The platform allocates a unique host port per app and passes it as $PORT
